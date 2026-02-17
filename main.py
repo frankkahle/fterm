@@ -18,10 +18,11 @@ if app_dir not in sys.path:
 
 from PyQt5.QtWidgets import QApplication, QStyleFactory
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QIcon
 from settings import Settings
 from mainwindow import MainWindow
 
-VERSION = "0.9.0"
+VERSION = "1.0.0"
 
 
 def parse_args():
@@ -58,6 +59,14 @@ def main():
 
     # Force Fusion style so system dark theme doesn't bleed through
     app.setStyle(QStyleFactory.create("Fusion"))
+
+    # Set application icon
+    icon_path = os.path.join(app_dir, "resources", "fterm.svg")
+    if not os.path.exists(icon_path):
+        # Installed location
+        icon_path = "/opt/fterm/resources/fterm.svg"
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
 
     settings = Settings()
     window = MainWindow(settings)

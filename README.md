@@ -2,6 +2,8 @@
 
 A terminal emulator built from scratch with Python, PyQt5, and pyte.
 
+**Version 1.0.0** | **SOS Tech Services**
+
 ## Features
 
 - **Full VT100/xterm emulation** via pyte — colored output, cursor movement, alt-screen apps (vim, htop, less, nano)
@@ -15,18 +17,36 @@ A terminal emulator built from scratch with Python, PyQt5, and pyte.
 - **Session restore** — remembers open tabs and working directories across restarts
 - **Zoom** — Ctrl+Shift+=/- to zoom in/out
 - **Preferences dialog** — GUI settings for shell, appearance, and session options
+- **Desktop integration** — installs as a system application with icon in your programs menu
 
-## Installation
+## Install
 
-Requires Python 3 and PyQt5.
+Requires Python 3, PyQt5, and Linux.
 
 ```bash
-# Install dependencies
-pip install pyte ptyprocess wcwidth
-# PyQt5: install via pip or your system package manager
-# e.g. sudo apt install python3-pyqt5
+# Install system dependencies
+sudo apt install python3-pyqt5 librsvg2-bin
 
-# Clone and run
+# Install Python dependencies
+pip install pyte ptyprocess wcwidth
+
+# Clone and install
+git clone https://github.com/frankkahle/fterm.git
+cd fterm
+sudo ./install.sh
+```
+
+This installs fterm to `/opt/fterm`, creates the `fterm` command, and adds it to your applications menu with an icon.
+
+To uninstall:
+
+```bash
+sudo /opt/fterm/uninstall.sh
+```
+
+## Run Without Installing
+
+```bash
 git clone https://github.com/frankkahle/fterm.git
 cd fterm
 python3 main.py
@@ -35,10 +55,10 @@ python3 main.py
 ## Usage
 
 ```bash
-python3 main.py              # Start with default shell
-python3 main.py -e /bin/zsh  # Start with a specific shell
-python3 main.py -d ~/projects # Start in a specific directory
-python3 main.py -n           # Start fresh (ignore saved session)
+fterm                  # Start with default shell
+fterm -e /bin/zsh      # Start with a specific shell
+fterm -d ~/projects    # Start in a specific directory
+fterm -n               # Start fresh (ignore saved session)
 ```
 
 ## Keyboard Shortcuts
