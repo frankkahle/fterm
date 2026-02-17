@@ -140,9 +140,16 @@ class TerminalWidget(QWidget):
             self._cursor_timer.timeout.connect(self._toggle_cursor)
             self._cursor_timer.start(530)
 
-        # Selection state
+        # Render coalescing: batch rapid PTY output into single repaints
+        self._repaint_pending = False
+        self._repaint_timer = QTimer(self)
+        self._repaint_timer.setSingleShot(True)
+        self._repaint_timer.setInterval(8)  # ~120 fps max
+        self._repaint_timer.timeout.connect(self._flush_repaint)
+
+        # Selection state — coordinates are display-row based (what's visible)
         self._selecting = False
-        self._selection_start = None  # (row, col) in screen coords
+        self._selection_start = None  # (display_row, col)
         self._selection_end = None
         self._double_click_word = False
 
@@ -243,12 +250,20 @@ class TerminalWidget(QWidget):
     # --- Data handling ---
 
     def _on_data_ready(self, data):
-        """Feed raw bytes from PTY into pyte."""
+        """Feed raw bytes from PTY into pyte, coalesce repaints."""
         self._stream.feed(data)
         self._update_scrollbar()
         # Auto-scroll to bottom on new output
         if self._scrollback_offset > 0 and not self._screen.in_alt_screen:
             self._scrollback_offset = 0
+        # Coalesce: schedule a repaint if one isn't already pending
+        if not self._repaint_pending:
+            self._repaint_pending = True
+            self._repaint_timer.start()
+
+    def _flush_repaint(self):
+        """Execute the coalesced repaint."""
+        self._repaint_pending = False
         self.update()
 
     def _on_process_exited(self, status):
@@ -332,16 +347,59 @@ class TerminalWidget(QWidget):
             return QColor(self._theme.terminal_fg)
         return QColor(self._theme.terminal_bg)
 
+    # --- Display row <-> data source mapping ---
+
+    def _get_history_lines(self):
+        """Return the history top deque as a list (cached per paint cycle)."""
+        if hasattr(self._screen.history, 'top'):
+            return list(self._screen.history.top)
+        return []
+
+    def _get_line_data(self, display_row, history_lines=None):
+        """Get the character data for a display row, accounting for scrollback.
+
+        Returns (line_data, is_history):
+            line_data: dict (screen buffer row) or list (history line)
+            is_history: True if this row comes from scrollback history
+        """
+        if self._scrollback_offset > 0 and not self._screen.in_alt_screen:
+            if history_lines is None:
+                history_lines = self._get_history_lines()
+            history_len = len(history_lines)
+            history_line_idx = history_len - self._scrollback_offset + display_row
+            if history_line_idx < 0:
+                return None, False
+            elif history_line_idx < history_len:
+                return history_lines[history_line_idx], True
+            else:
+                screen_row = history_line_idx - history_len
+                return self._screen.buffer.get(screen_row, {}), False
+        else:
+            return self._screen.buffer.get(display_row, {}), False
+
+    def _get_char_at(self, line_data, col, is_history):
+        """Get a character from line data at the given column."""
+        if line_data is None:
+            return self._screen.default_char
+        if is_history:
+            # History lines are lists
+            if col < len(line_data):
+                return line_data[col]
+            return self._screen.default_char
+        else:
+            # Screen buffer rows are dicts
+            return line_data.get(col, self._screen.default_char)
+
     # --- Selection helpers ---
 
     def _pos_to_cell(self, pos):
-        """Convert a QPoint (widget coords) to (row, col) in screen space."""
+        """Convert a QPoint (widget coords) to (display_row, col)."""
         col = max(0, min(pos.x() // self._cell_width, self._cols - 1))
         row = max(0, min(pos.y() // self._cell_height, self._rows - 1))
         return (row, col)
 
-    def _is_in_selection(self, row, col):
-        """Check if (row, col) is within the current selection."""
+    def _is_in_selection(self, display_row, col):
+        """Check if (display_row, col) is within the current selection."""
         if self._selection_start is None or self._selection_end is None:
             return False
         sr, sc = self._selection_start
@@ -349,18 +407,18 @@ class TerminalWidget(QWidget):
         # Normalize: ensure start <= end
         if (sr, sc) > (er, ec):
             sr, sc, er, ec = er, ec, sr, sc
-        if row < sr or row > er:
+        if display_row < sr or display_row > er:
             return False
-        if row == sr and row == er:
+        if display_row == sr and display_row == er:
             return sc <= col <= ec
-        if row == sr:
+        if display_row == sr:
             return col >= sc
-        if row == er:
+        if display_row == er:
             return col <= ec
         return True
 
     def _get_selected_text(self):
-        """Extract selected text from the screen buffer."""
+        """Extract selected text from whatever is currently displayed."""
         if self._selection_start is None or self._selection_end is None:
             return ""
         sr, sc = self._selection_start
@@ -368,15 +426,16 @@ class TerminalWidget(QWidget):
         if (sr, sc) > (er, ec):
             sr, sc, er, ec = er, ec, sr, sc
 
+        history_lines = self._get_history_lines()
         lines = []
-        for row in range(sr, er + 1):
+        for display_row in range(sr, er + 1):
+            line_data, is_history = self._get_line_data(display_row, history_lines)
             line_chars = []
-            start_col = sc if row == sr else 0
-            end_col = ec if row == er else self._cols - 1
+            start_col = sc if display_row == sr else 0
+            end_col = ec if display_row == er else self._cols - 1
 
-            buffer_row = self._screen.buffer.get(row, {})
             for col in range(start_col, end_col + 1):
-                char = buffer_row.get(col, self._screen.default_char)
+                char = self._get_char_at(line_data, col, is_history)
                 line_chars.append(char.data if char.data else " ")
 
             line = "".join(line_chars).rstrip()
@@ -431,50 +490,32 @@ class TerminalWidget(QWidget):
         painter.fillRect(self.rect(), bg_color)
 
         screen = self._screen
-        cursor_row = screen.cursor.y
-        cursor_col = screen.cursor.x
+        history_lines = self._get_history_lines()
 
-        # Determine which lines to render
-        # When scrolled back in history, show history lines
-        history_top = list(screen.history.top) if hasattr(screen.history, 'top') else []
-        history_len = len(history_top)
+        for display_row in range(self._rows):
+            line_data, is_history = self._get_line_data(display_row, history_lines)
+            if line_data is None:
+                continue
+            self._paint_line(painter, display_row, line_data, is_history)
 
-        for row in range(self._rows):
-            display_row = row
-            buffer_row = None
-
-            if self._scrollback_offset > 0 and not screen.in_alt_screen:
-                # We're scrolled back into history
-                history_line_idx = history_len - self._scrollback_offset + row
-                if history_line_idx < 0:
-                    continue
-                elif history_line_idx < history_len:
-                    # Render from history
-                    buffer_row = history_top[history_line_idx]
-                    self._paint_history_line(painter, display_row, buffer_row)
-                    continue
-                else:
-                    # Render from current screen buffer
-                    screen_row = history_line_idx - history_len
-                    buffer_row = screen.buffer.get(screen_row, {})
-            else:
-                buffer_row = screen.buffer.get(row, {})
-
-            self._paint_screen_line(painter, display_row, buffer_row, row, screen)
-
-        # Draw cursor (only when not scrolled back and cursor should be visible)
-        if self._scrollback_offset == 0 and self._cursor_visible:
-            self._paint_cursor(painter, cursor_row, cursor_col)
+        # Draw cursor:
+        # - Only when not scrolled back
+        # - Only when blink state is visible
+        # - Only when terminal hasn't hidden cursor via \e[?25l
+        cursor_hidden = getattr(screen.cursor, 'hidden', False)
+        if self._scrollback_offset == 0 and self._cursor_visible and not cursor_hidden:
+            self._paint_cursor(painter, screen.cursor.y, screen.cursor.x)
 
         painter.end()
 
-    def _paint_screen_line(self, painter, display_row, buffer_row, screen_row, screen):
-        """Paint one line from the screen buffer."""
+    def _paint_line(self, painter, display_row, line_data, is_history):
+        """Paint one line from either screen buffer or history."""
         y = display_row * self._cell_height
+        screen = self._screen
 
         col = 0
         while col < self._cols:
-            char = buffer_row.get(col, screen.default_char)
+            char = self._get_char_at(line_data, col, is_history)
             char_data = char.data if char.data else " "
 
             # Resolve colors
@@ -491,7 +532,8 @@ class TerminalWidget(QWidget):
                 fg, bg = bg, fg
 
             # Selection highlighting
-            if self._is_in_selection(screen_row, col):
+            in_sel = self._is_in_selection(display_row, col)
+            if in_sel:
                 bg = QColor(self._theme.selection_bg)
                 fg = QColor(self._theme.selection_fg)
 
@@ -506,7 +548,7 @@ class TerminalWidget(QWidget):
             cell_rect = QRect(x, y, self._cell_width * char_width, self._cell_height)
 
             # Draw cell background
-            if bg != QColor(self._theme.terminal_bg) or self._is_in_selection(screen_row, col):
+            if bg != QColor(self._theme.terminal_bg) or in_sel:
                 painter.fillRect(cell_rect, bg)
 
             # Draw character
@@ -519,7 +561,6 @@ class TerminalWidget(QWidget):
                     font.setItalic(True)
                 painter.setFont(font)
                 painter.drawText(x, y + self._font_ascent, char_data)
-                # Restore font if we changed it
                 if char.bold or char.italics:
                     painter.setFont(self._font)
 
@@ -534,49 +575,6 @@ class TerminalWidget(QWidget):
                 painter.setPen(fg)
                 strike_y = y + self._cell_height // 2
                 painter.drawLine(x, strike_y, x + self._cell_width * char_width, strike_y)
-
-            col += char_width
-
-    def _paint_history_line(self, painter, display_row, history_line):
-        """Paint one line from the scrollback history."""
-        y = display_row * self._cell_height
-
-        col = 0
-        while col < self._cols and col < len(history_line):
-            char = history_line[col]
-            char_data = char.data if char.data else " "
-
-            fg = self._resolve_color(char.fg, is_fg=True)
-            bg = self._resolve_color(char.bg, is_fg=False)
-
-            if char.bold and isinstance(char.fg, str) and char.fg in _ANSI_COLOR_NAMES:
-                idx = _ANSI_COLOR_NAMES[char.fg] + 8
-                fg = get_ansi_palette(self._theme)[idx]
-
-            if char.reverse:
-                fg, bg = bg, fg
-
-            x = col * self._cell_width
-            char_width = 1
-            wc = wcwidth(char_data) if char_data and char_data != " " else 1
-            if wc > 1:
-                char_width = wc
-
-            if bg != QColor(self._theme.terminal_bg):
-                cell_rect = QRect(x, y, self._cell_width * char_width, self._cell_height)
-                painter.fillRect(cell_rect, bg)
-
-            if char_data.strip():
-                painter.setPen(fg)
-                font = QFont(self._font)
-                if char.bold:
-                    font.setBold(True)
-                if char.italics:
-                    font.setItalic(True)
-                painter.setFont(font)
-                painter.drawText(x, y + self._font_ascent, char_data)
-                if char.bold or char.italics:
-                    painter.setFont(self._font)
 
             col += char_width
 
@@ -644,8 +642,8 @@ class TerminalWidget(QWidget):
     def mouseDoubleClickEvent(self, event):
         """Double-click selects a word."""
         if event.button() == Qt.LeftButton:
-            row, col = self._pos_to_cell(event.pos())
-            buffer_row = self._screen.buffer.get(row, {})
+            display_row, col = self._pos_to_cell(event.pos())
+            line_data, is_history = self._get_line_data(display_row)
 
             # Find word boundaries
             start_col = col
@@ -654,24 +652,24 @@ class TerminalWidget(QWidget):
             def is_word_char(c):
                 return c.isalnum() or c in ("_", "-", ".", "/", "~")
 
-            char = buffer_row.get(col, self._screen.default_char)
+            char = self._get_char_at(line_data, col, is_history)
             if not is_word_char(char.data if char.data else " "):
                 return
 
             while start_col > 0:
-                c = buffer_row.get(start_col - 1, self._screen.default_char)
+                c = self._get_char_at(line_data, start_col - 1, is_history)
                 if not is_word_char(c.data if c.data else " "):
                     break
                 start_col -= 1
 
             while end_col < self._cols - 1:
-                c = buffer_row.get(end_col + 1, self._screen.default_char)
+                c = self._get_char_at(line_data, end_col + 1, is_history)
                 if not is_word_char(c.data if c.data else " "):
                     break
                 end_col += 1
 
-            self._selection_start = (row, start_col)
-            self._selection_end = (row, end_col)
+            self._selection_start = (display_row, start_col)
+            self._selection_end = (display_row, end_col)
             self._double_click_word = True
             self.update()
 
@@ -863,4 +861,5 @@ class TerminalWidget(QWidget):
     def terminate(self):
         """Terminate the underlying process."""
         self._cursor_timer.stop()
+        self._repaint_timer.stop()
         self._process.terminate()

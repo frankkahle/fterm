@@ -13,6 +13,7 @@ class SessionTabManager(QTabWidget):
 
     current_terminal_changed = pyqtSignal(object)  # TerminalWidget or None
     tab_count_changed = pyqtSignal(int)
+    terminal_title_changed = pyqtSignal(str)  # OSC title from active terminal
 
     def __init__(self, settings=None, parent=None):
         super().__init__(parent)
@@ -94,18 +95,19 @@ class SessionTabManager(QTabWidget):
             i -= 1
 
     def _on_title_changed(self, terminal, title):
-        """Store the OSC title as tooltip but keep tab text as 'Term N'."""
+        """Store the OSC title as tooltip; propagate to window if active tab."""
         index = self.indexOf(terminal)
         if index >= 0 and title:
             self.setTabToolTip(index, title)
+            # If this is the active tab, update window title
+            if index == self.currentIndex():
+                self.terminal_title_changed.emit(title)
 
     def _on_process_exited(self, terminal, status):
-        """Handle process exit - mark tab or close it."""
+        """Auto-close the tab when its shell exits."""
         index = self.indexOf(terminal)
         if index >= 0:
-            title = self.tabText(index)
-            if not title.endswith(" (exited)"):
-                self.setTabText(index, f"{title} (exited)")
+            self.close_tab(index)
 
     def _tab_context_menu(self, pos):
         """Show context menu for tab bar."""

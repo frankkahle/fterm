@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
     def _setup_connections(self):
         self._tab_manager.current_terminal_changed.connect(self._on_terminal_changed)
         self._tab_manager.tab_count_changed.connect(self._on_tab_count_changed)
+        self._tab_manager.terminal_title_changed.connect(self._on_title_changed)
         self._settings.settings_changed.connect(self._on_settings_changed)
 
     # --- Actions ---
@@ -186,9 +187,15 @@ class MainWindow(QMainWindow):
         else:
             self.setWindowTitle("fterm")
 
+    def _on_title_changed(self, title):
+        """Update window title when the active terminal's OSC title changes."""
+        if title:
+            self.setWindowTitle(f"{title} - fterm")
+
     def _on_tab_count_changed(self, count):
         if count == 0:
             self._update_statusbar()
+            self.close()  # Close window when last tab exits
 
     def _on_settings_changed(self, key, value):
         if key == "theme":
