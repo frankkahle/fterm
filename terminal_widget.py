@@ -1,0 +1,866 @@
+"""Core terminal widget: renders terminal grid, handles input."""
+
+import pyte
+import pyte.modes as modes
+from wcwidth import wcwidth
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint, QRect
+from PyQt5.QtGui import (
+    QPainter, QColor, QFont, QFontMetrics, QFontDatabase,
+    QKeySequence, QClipboard, QPen, QBrush,
+)
+from PyQt5.QtWidgets import QWidget, QApplication, QMenu, QAction, QScrollBar, QHBoxLayout
+
+from terminal_process import TerminalProcess
+from themes import get_theme, get_ansi_palette, get_xterm_256_color
+
+
+# Map pyte color names to ANSI indices
+_ANSI_COLOR_NAMES = {
+    "black": 0, "red": 1, "green": 2, "brown": 3, "yellow": 3,
+    "blue": 4, "magenta": 5, "cyan": 6, "white": 7,
+}
+
+
+class TerminalScreen(pyte.HistoryScreen):
+    """Extended pyte screen with alt-screen buffer and title/bell support."""
+
+    def __init__(self, columns, lines, history=10000):
+        super().__init__(columns, lines, history=history)
+        self._alt_buffer = None
+        self._alt_cursor = None
+        self._alt_mode = False
+        self.title = ""
+        self.icon_name = ""
+        self._title_changed_callback = None
+        self._bell_callback = None
+
+    def set_title_callback(self, callback):
+        self._title_changed_callback = callback
+
+    def set_bell_callback(self, callback):
+        self._bell_callback = callback
+
+    def set_title(self, param):
+        self.title = param
+        if self._title_changed_callback:
+            self._title_changed_callback(param)
+
+    def set_icon_name(self, param):
+        self.icon_name = param
+
+    def bell(self):
+        if self._bell_callback:
+            self._bell_callback()
+
+    def set_mode(self, *mds, **kwargs):
+        """Intercept alt-screen mode switches."""
+        for mode in mds:
+            if mode in (47, 1047, 1049):
+                self._enter_alt_screen(save_cursor=(mode == 1049))
+        super().set_mode(*mds, **kwargs)
+
+    def reset_mode(self, *mds, **kwargs):
+        """Intercept alt-screen mode resets."""
+        for mode in mds:
+            if mode in (47, 1047, 1049):
+                self._exit_alt_screen(restore_cursor=(mode == 1049))
+        super().reset_mode(*mds, **kwargs)
+
+    def _enter_alt_screen(self, save_cursor=True):
+        if self._alt_mode:
+            return
+        self._alt_mode = True
+        # Save main buffer
+        self._alt_buffer = {}
+        for line_no in self.buffer:
+            self._alt_buffer[line_no] = dict(self.buffer[line_no])
+        if save_cursor:
+            self._alt_cursor = self.cursor
+        # Clear alt screen
+        self.erase_in_display(2)
+
+    def _exit_alt_screen(self, restore_cursor=True):
+        if not self._alt_mode:
+            return
+        self._alt_mode = False
+        # Restore main buffer
+        if self._alt_buffer is not None:
+            self.buffer.clear()
+            for line_no, line_data in self._alt_buffer.items():
+                self.buffer[line_no] = line_data
+            self._alt_buffer = None
+        if restore_cursor and self._alt_cursor is not None:
+            self.cursor = self._alt_cursor
+            self._alt_cursor = None
+
+    @property
+    def in_alt_screen(self):
+        return self._alt_mode
+
+
+class TerminalWidget(QWidget):
+    """Custom widget that renders a terminal grid with QPainter."""
+
+    title_changed = pyqtSignal(str)
+    process_exited = pyqtSignal(int)
+
+    def __init__(self, settings=None, parent=None):
+        super().__init__(parent)
+        self._settings = settings
+
+        # Terminal state
+        self._rows = 24
+        self._cols = 80
+        self._scrollback_offset = 0
+
+        # Theme/appearance
+        theme_name = settings.get("theme", "Dark") if settings else "Dark"
+        self._theme = get_theme(theme_name)
+        self._setup_font()
+
+        # pyte screen + stream
+        scrollback = settings.get("scrollback_lines", 10000) if settings else 10000
+        self._screen = TerminalScreen(self._cols, self._rows, history=scrollback)
+        self._stream = pyte.ByteStream(self._screen)
+
+        # Title / bell callbacks
+        self._screen.set_title_callback(self._on_title_changed)
+        self._screen.set_bell_callback(self._on_bell)
+
+        # Process
+        self._process = TerminalProcess(self)
+        self._process.data_ready.connect(self._on_data_ready)
+        self._process.process_exited.connect(self._on_process_exited)
+
+        # Cursor blink timer
+        self._cursor_visible = True
+        self._cursor_timer = QTimer(self)
+        blink = settings.get("cursor_blink", True) if settings else True
+        if blink:
+            self._cursor_timer.timeout.connect(self._toggle_cursor)
+            self._cursor_timer.start(530)
+
+        # Selection state
+        self._selecting = False
+        self._selection_start = None  # (row, col) in screen coords
+        self._selection_end = None
+        self._double_click_word = False
+
+        # Visual bell state
+        self._bell_active = False
+        self._bell_timer = QTimer(self)
+        self._bell_timer.setSingleShot(True)
+        self._bell_timer.timeout.connect(self._clear_bell)
+
+        # Widget setup
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAttribute(Qt.WA_InputMethodEnabled, True)
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        self.setMouseTracking(True)
+        self.setMinimumSize(200, 100)
+
+        # Scrollbar
+        self._scrollbar = QScrollBar(Qt.Vertical, self)
+        self._scrollbar.setVisible(False)
+        self._scrollbar.valueChanged.connect(self._on_scrollbar_changed)
+
+    # --- Font setup ---
+
+    def _setup_font(self):
+        family = self._settings.get("font_family", "Monospace") if self._settings else "Monospace"
+        size = self._settings.get("font_size", 11) if self._settings else 11
+        zoom = self._settings.get("zoom_level", 0) if self._settings else 0
+        self._base_font_size = size
+        self._zoom_level = zoom
+        effective_size = max(6, size + zoom)
+        self._font = QFont(family, effective_size)
+        self._font.setStyleHint(QFont.Monospace)
+        self._font.setFixedPitch(True)
+        fm = QFontMetrics(self._font)
+        self._cell_width = fm.horizontalAdvance("M")
+        self._cell_height = fm.height()
+        self._font_ascent = fm.ascent()
+        if self._cell_width < 1:
+            self._cell_width = 8
+        if self._cell_height < 1:
+            self._cell_height = 16
+
+    def update_font(self, family=None, size=None):
+        """Update font and recalculate grid."""
+        if family:
+            if self._settings:
+                self._settings.set("font_family", family)
+        if size is not None:
+            self._base_font_size = size
+            if self._settings:
+                self._settings.set("font_size", size)
+        self._setup_font()
+        self._recalculate_grid()
+        self.update()
+
+    def zoom_in(self):
+        self._zoom_level += 1
+        if self._settings:
+            self._settings.set("zoom_level", self._zoom_level)
+        self._setup_font()
+        self._recalculate_grid()
+        self.update()
+
+    def zoom_out(self):
+        if self._base_font_size + self._zoom_level > 6:
+            self._zoom_level -= 1
+            if self._settings:
+                self._settings.set("zoom_level", self._zoom_level)
+            self._setup_font()
+            self._recalculate_grid()
+            self.update()
+
+    def zoom_reset(self):
+        self._zoom_level = 0
+        if self._settings:
+            self._settings.set("zoom_level", 0)
+        self._setup_font()
+        self._recalculate_grid()
+        self.update()
+
+    # --- Process lifecycle ---
+
+    def start_process(self, shell=None, cwd=None):
+        """Start the shell process."""
+        if shell is None:
+            shell = self._settings.get_shell() if self._settings else "/bin/bash"
+        self._process.start(shell=shell, rows=self._rows, cols=self._cols, cwd=cwd)
+
+    def get_process(self):
+        return self._process
+
+    def get_cwd(self):
+        return self._process.get_cwd()
+
+    def get_title(self):
+        return self._screen.title or ""
+
+    # --- Data handling ---
+
+    def _on_data_ready(self, data):
+        """Feed raw bytes from PTY into pyte."""
+        self._stream.feed(data)
+        self._update_scrollbar()
+        # Auto-scroll to bottom on new output
+        if self._scrollback_offset > 0 and not self._screen.in_alt_screen:
+            self._scrollback_offset = 0
+        self.update()
+
+    def _on_process_exited(self, status):
+        self.process_exited.emit(status)
+
+    def _on_title_changed(self, title):
+        self.title_changed.emit(title)
+
+    def _on_bell(self):
+        """Visual bell: briefly flash background."""
+        self._bell_active = True
+        self.update()
+        self._bell_timer.start(120)
+
+    def _clear_bell(self):
+        self._bell_active = False
+        self.update()
+
+    # --- Cursor blink ---
+
+    def _toggle_cursor(self):
+        self._cursor_visible = not self._cursor_visible
+        self.update()
+
+    # --- Grid calculations ---
+
+    def _recalculate_grid(self):
+        """Recalculate rows/cols from widget size and resize PTY."""
+        sb_width = self._scrollbar.width() if self._scrollbar.isVisible() else 0
+        available_width = self.width() - sb_width
+        new_cols = max(2, available_width // self._cell_width)
+        new_rows = max(1, self.height() // self._cell_height)
+
+        if new_cols != self._cols or new_rows != self._rows:
+            self._cols = new_cols
+            self._rows = new_rows
+            self._screen.resize(new_rows, new_cols)
+            self._process.resize(new_rows, new_cols)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._recalculate_grid()
+        # Position scrollbar
+        sb_width = 14
+        self._scrollbar.setGeometry(
+            self.width() - sb_width, 0, sb_width, self.height()
+        )
+        self._update_scrollbar()
+
+    # --- Color resolution ---
+
+    def _resolve_color(self, color, is_fg=True):
+        """Resolve a pyte color spec to a QColor."""
+        if color == "default":
+            if is_fg:
+                return QColor(self._theme.terminal_fg)
+            else:
+                return QColor(self._theme.terminal_bg)
+
+        # Named ANSI color
+        if isinstance(color, str) and color in _ANSI_COLOR_NAMES:
+            idx = _ANSI_COLOR_NAMES[color]
+            return get_ansi_palette(self._theme)[idx]
+
+        # 256-color index (string of digits)
+        if isinstance(color, str) and color.isdigit():
+            return get_xterm_256_color(int(color), self._theme)
+
+        # 24-bit truecolor (hex string like "ff00aa")
+        if isinstance(color, str) and len(color) == 6:
+            try:
+                r = int(color[0:2], 16)
+                g = int(color[2:4], 16)
+                b = int(color[4:6], 16)
+                return QColor(r, g, b)
+            except ValueError:
+                pass
+
+        # Fallback
+        if is_fg:
+            return QColor(self._theme.terminal_fg)
+        return QColor(self._theme.terminal_bg)
+
+    # --- Selection helpers ---
+
+    def _pos_to_cell(self, pos):
+        """Convert a QPoint (widget coords) to (row, col) in screen space."""
+        col = max(0, min(pos.x() // self._cell_width, self._cols - 1))
+        row = max(0, min(pos.y() // self._cell_height, self._rows - 1))
+        return (row, col)
+
+    def _is_in_selection(self, row, col):
+        """Check if (row, col) is within the current selection."""
+        if self._selection_start is None or self._selection_end is None:
+            return False
+        sr, sc = self._selection_start
+        er, ec = self._selection_end
+        # Normalize: ensure start <= end
+        if (sr, sc) > (er, ec):
+            sr, sc, er, ec = er, ec, sr, sc
+        if row < sr or row > er:
+            return False
+        if row == sr and row == er:
+            return sc <= col <= ec
+        if row == sr:
+            return col >= sc
+        if row == er:
+            return col <= ec
+        return True
+
+    def _get_selected_text(self):
+        """Extract selected text from the screen buffer."""
+        if self._selection_start is None or self._selection_end is None:
+            return ""
+        sr, sc = self._selection_start
+        er, ec = self._selection_end
+        if (sr, sc) > (er, ec):
+            sr, sc, er, ec = er, ec, sr, sc
+
+        lines = []
+        for row in range(sr, er + 1):
+            line_chars = []
+            start_col = sc if row == sr else 0
+            end_col = ec if row == er else self._cols - 1
+
+            buffer_row = self._screen.buffer.get(row, {})
+            for col in range(start_col, end_col + 1):
+                char = buffer_row.get(col, self._screen.default_char)
+                line_chars.append(char.data if char.data else " ")
+
+            line = "".join(line_chars).rstrip()
+            lines.append(line)
+
+        return "\n".join(lines)
+
+    def has_selection(self):
+        return self._selection_start is not None and self._selection_end is not None
+
+    def clear_selection(self):
+        self._selection_start = None
+        self._selection_end = None
+        self.update()
+
+    def select_all(self):
+        """Select all visible text."""
+        self._selection_start = (0, 0)
+        self._selection_end = (self._rows - 1, self._cols - 1)
+        self.update()
+
+    # --- Clipboard ---
+
+    def copy_selection(self):
+        """Copy selected text to clipboard."""
+        text = self._get_selected_text()
+        if text:
+            QApplication.clipboard().setText(text)
+        return bool(text)
+
+    def paste_clipboard(self):
+        """Paste clipboard text into terminal."""
+        text = QApplication.clipboard().text()
+        if text:
+            # Bracket paste if mode 2004 is active
+            if 2004 in self._screen.mode:
+                data = b"\x1b[200~" + text.encode("utf-8") + b"\x1b[201~"
+            else:
+                data = text.encode("utf-8")
+            self._process.write(data)
+
+    # --- Paint ---
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setFont(self._font)
+
+        # Background
+        bg_color = QColor(self._theme.terminal_bg)
+        if self._bell_active:
+            bg_color = bg_color.lighter(150)
+        painter.fillRect(self.rect(), bg_color)
+
+        screen = self._screen
+        cursor_row = screen.cursor.y
+        cursor_col = screen.cursor.x
+
+        # Determine which lines to render
+        # When scrolled back in history, show history lines
+        history_top = list(screen.history.top) if hasattr(screen.history, 'top') else []
+        history_len = len(history_top)
+
+        for row in range(self._rows):
+            display_row = row
+            buffer_row = None
+
+            if self._scrollback_offset > 0 and not screen.in_alt_screen:
+                # We're scrolled back into history
+                history_line_idx = history_len - self._scrollback_offset + row
+                if history_line_idx < 0:
+                    continue
+                elif history_line_idx < history_len:
+                    # Render from history
+                    buffer_row = history_top[history_line_idx]
+                    self._paint_history_line(painter, display_row, buffer_row)
+                    continue
+                else:
+                    # Render from current screen buffer
+                    screen_row = history_line_idx - history_len
+                    buffer_row = screen.buffer.get(screen_row, {})
+            else:
+                buffer_row = screen.buffer.get(row, {})
+
+            self._paint_screen_line(painter, display_row, buffer_row, row, screen)
+
+        # Draw cursor (only when not scrolled back and cursor should be visible)
+        if self._scrollback_offset == 0 and self._cursor_visible:
+            self._paint_cursor(painter, cursor_row, cursor_col)
+
+        painter.end()
+
+    def _paint_screen_line(self, painter, display_row, buffer_row, screen_row, screen):
+        """Paint one line from the screen buffer."""
+        y = display_row * self._cell_height
+
+        col = 0
+        while col < self._cols:
+            char = buffer_row.get(col, screen.default_char)
+            char_data = char.data if char.data else " "
+
+            # Resolve colors
+            fg = self._resolve_color(char.fg, is_fg=True)
+            bg = self._resolve_color(char.bg, is_fg=False)
+
+            # Handle bold -> bright color mapping for named ANSI colors
+            if char.bold and isinstance(char.fg, str) and char.fg in _ANSI_COLOR_NAMES:
+                idx = _ANSI_COLOR_NAMES[char.fg] + 8  # bright variant
+                fg = get_ansi_palette(self._theme)[idx]
+
+            # Reverse video
+            if char.reverse:
+                fg, bg = bg, fg
+
+            # Selection highlighting
+            if self._is_in_selection(screen_row, col):
+                bg = QColor(self._theme.selection_bg)
+                fg = QColor(self._theme.selection_fg)
+
+            x = col * self._cell_width
+
+            # Wide character handling
+            char_width = 1
+            wc = wcwidth(char_data) if char_data and char_data != " " else 1
+            if wc > 1:
+                char_width = wc
+
+            cell_rect = QRect(x, y, self._cell_width * char_width, self._cell_height)
+
+            # Draw cell background
+            if bg != QColor(self._theme.terminal_bg) or self._is_in_selection(screen_row, col):
+                painter.fillRect(cell_rect, bg)
+
+            # Draw character
+            if char_data.strip():
+                painter.setPen(fg)
+                font = QFont(self._font)
+                if char.bold:
+                    font.setBold(True)
+                if char.italics:
+                    font.setItalic(True)
+                painter.setFont(font)
+                painter.drawText(x, y + self._font_ascent, char_data)
+                # Restore font if we changed it
+                if char.bold or char.italics:
+                    painter.setFont(self._font)
+
+            # Underline
+            if char.underscore:
+                painter.setPen(fg)
+                underline_y = y + self._cell_height - 1
+                painter.drawLine(x, underline_y, x + self._cell_width * char_width, underline_y)
+
+            # Strikethrough
+            if char.strikethrough:
+                painter.setPen(fg)
+                strike_y = y + self._cell_height // 2
+                painter.drawLine(x, strike_y, x + self._cell_width * char_width, strike_y)
+
+            col += char_width
+
+    def _paint_history_line(self, painter, display_row, history_line):
+        """Paint one line from the scrollback history."""
+        y = display_row * self._cell_height
+
+        col = 0
+        while col < self._cols and col < len(history_line):
+            char = history_line[col]
+            char_data = char.data if char.data else " "
+
+            fg = self._resolve_color(char.fg, is_fg=True)
+            bg = self._resolve_color(char.bg, is_fg=False)
+
+            if char.bold and isinstance(char.fg, str) and char.fg in _ANSI_COLOR_NAMES:
+                idx = _ANSI_COLOR_NAMES[char.fg] + 8
+                fg = get_ansi_palette(self._theme)[idx]
+
+            if char.reverse:
+                fg, bg = bg, fg
+
+            x = col * self._cell_width
+            char_width = 1
+            wc = wcwidth(char_data) if char_data and char_data != " " else 1
+            if wc > 1:
+                char_width = wc
+
+            if bg != QColor(self._theme.terminal_bg):
+                cell_rect = QRect(x, y, self._cell_width * char_width, self._cell_height)
+                painter.fillRect(cell_rect, bg)
+
+            if char_data.strip():
+                painter.setPen(fg)
+                font = QFont(self._font)
+                if char.bold:
+                    font.setBold(True)
+                if char.italics:
+                    font.setItalic(True)
+                painter.setFont(font)
+                painter.drawText(x, y + self._font_ascent, char_data)
+                if char.bold or char.italics:
+                    painter.setFont(self._font)
+
+            col += char_width
+
+    def _paint_cursor(self, painter, row, col):
+        """Draw the cursor at the given position."""
+        x = col * self._cell_width
+        y = row * self._cell_height
+        cursor_color = QColor(self._theme.cursor_color)
+
+        style = self._settings.get("cursor_style", "block") if self._settings else "block"
+
+        if style == "block":
+            painter.fillRect(x, y, self._cell_width, self._cell_height, cursor_color)
+            # Draw the character under the cursor in inverted color
+            char = self._screen.buffer.get(row, {}).get(col, self._screen.default_char)
+            if char.data and char.data.strip():
+                painter.setPen(QColor(self._theme.terminal_bg))
+                painter.drawText(x, y + self._font_ascent, char.data)
+        elif style == "underline":
+            painter.fillRect(x, y + self._cell_height - 2, self._cell_width, 2, cursor_color)
+        elif style == "bar":
+            painter.fillRect(x, y, 2, self._cell_height, cursor_color)
+
+    # --- Scrollbar ---
+
+    def _update_scrollbar(self):
+        history_len = len(self._screen.history.top) if hasattr(self._screen.history, 'top') else 0
+        if history_len > 0 and not self._screen.in_alt_screen:
+            self._scrollbar.setVisible(True)
+            self._scrollbar.setRange(0, history_len)
+            self._scrollbar.setValue(history_len - self._scrollback_offset)
+            self._scrollbar.setPageStep(self._rows)
+        else:
+            self._scrollbar.setVisible(False)
+
+    def _on_scrollbar_changed(self, value):
+        history_len = len(self._screen.history.top) if hasattr(self._screen.history, 'top') else 0
+        self._scrollback_offset = max(0, history_len - value)
+        self.update()
+
+    # --- Mouse events ---
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._selecting = True
+            self._selection_start = self._pos_to_cell(event.pos())
+            self._selection_end = self._selection_start
+            self._double_click_word = False
+            self.update()
+
+    def mouseMoveEvent(self, event):
+        if self._selecting and event.buttons() & Qt.LeftButton:
+            self._selection_end = self._pos_to_cell(event.pos())
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._selecting = False
+            if self._selection_start == self._selection_end:
+                # Click without drag - clear selection
+                self._selection_start = None
+                self._selection_end = None
+                self.update()
+
+    def mouseDoubleClickEvent(self, event):
+        """Double-click selects a word."""
+        if event.button() == Qt.LeftButton:
+            row, col = self._pos_to_cell(event.pos())
+            buffer_row = self._screen.buffer.get(row, {})
+
+            # Find word boundaries
+            start_col = col
+            end_col = col
+
+            def is_word_char(c):
+                return c.isalnum() or c in ("_", "-", ".", "/", "~")
+
+            char = buffer_row.get(col, self._screen.default_char)
+            if not is_word_char(char.data if char.data else " "):
+                return
+
+            while start_col > 0:
+                c = buffer_row.get(start_col - 1, self._screen.default_char)
+                if not is_word_char(c.data if c.data else " "):
+                    break
+                start_col -= 1
+
+            while end_col < self._cols - 1:
+                c = buffer_row.get(end_col + 1, self._screen.default_char)
+                if not is_word_char(c.data if c.data else " "):
+                    break
+                end_col += 1
+
+            self._selection_start = (row, start_col)
+            self._selection_end = (row, end_col)
+            self._double_click_word = True
+            self.update()
+
+    def wheelEvent(self, event):
+        """Mouse wheel: scroll through history or send to child process."""
+        if self._screen.in_alt_screen:
+            # In alt screen (e.g., less, vim), send arrow keys to process
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self._process.write(b"\x1b[A" * 3)  # Up arrow x3
+            elif delta < 0:
+                self._process.write(b"\x1b[B" * 3)  # Down arrow x3
+        else:
+            # Normal mode: scroll through history
+            delta = event.angleDelta().y()
+            history_len = len(self._screen.history.top) if hasattr(self._screen.history, 'top') else 0
+            if delta > 0:
+                self._scrollback_offset = min(
+                    self._scrollback_offset + 3, history_len
+                )
+            elif delta < 0:
+                self._scrollback_offset = max(
+                    self._scrollback_offset - 3, 0
+                )
+            self._update_scrollbar()
+            self.update()
+
+    # --- Context menu ---
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+
+        copy_action = menu.addAction("Copy")
+        copy_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        copy_action.setEnabled(self.has_selection())
+        copy_action.triggered.connect(self.copy_selection)
+
+        paste_action = menu.addAction("Paste")
+        paste_action.setShortcut(QKeySequence("Ctrl+Shift+V"))
+        paste_action.triggered.connect(self.paste_clipboard)
+
+        select_all_action = menu.addAction("Select All")
+        select_all_action.triggered.connect(self.select_all)
+
+        menu.addSeparator()
+
+        clear_action = menu.addAction("Clear")
+        clear_action.triggered.connect(self._clear_terminal)
+
+        reset_action = menu.addAction("Reset")
+        reset_action.triggered.connect(self._reset_terminal)
+
+        menu.exec_(event.globalPos())
+
+    def _clear_terminal(self):
+        """Clear the screen (like 'clear' command)."""
+        self._process.write(b"\x1b[2J\x1b[H")
+
+    def _reset_terminal(self):
+        """Full reset of terminal state."""
+        self._screen.reset()
+        self._scrollback_offset = 0
+        self.update()
+
+    # --- Keyboard input ---
+
+    def keyPressEvent(self, event):
+        """Map Qt key events to terminal escape sequences."""
+        key = event.key()
+        mods = event.modifiers()
+        text = event.text()
+
+        # Reset scroll on typing
+        if self._scrollback_offset > 0:
+            self._scrollback_offset = 0
+            self._update_scrollbar()
+
+        # Clear selection on typing (except for copy shortcut)
+        if not (mods & Qt.ShiftModifier and mods & Qt.ControlModifier and key == Qt.Key_C):
+            if self.has_selection() and key not in (Qt.Key_Shift, Qt.Key_Control, Qt.Key_Alt, Qt.Key_Meta):
+                self.clear_selection()
+
+        # Ctrl+Shift shortcuts (terminal-specific, don't send to shell)
+        if mods & Qt.ControlModifier and mods & Qt.ShiftModifier:
+            if key == Qt.Key_C:
+                self.copy_selection()
+                return
+            elif key == Qt.Key_V:
+                self.paste_clipboard()
+                return
+            # Let other Ctrl+Shift combos (T, W, Tab) propagate to MainWindow
+            event.ignore()
+            return
+
+        # Special keys mapping
+        seq = self._map_key(key, mods)
+        if seq is not None:
+            self._process.write(seq)
+            return
+
+        # Ctrl+letter (send as control character)
+        if mods & Qt.ControlModifier and not mods & Qt.ShiftModifier:
+            if Qt.Key_A <= key <= Qt.Key_Z:
+                ctrl_char = key - Qt.Key_A + 1
+                self._process.write(bytes([ctrl_char]))
+                return
+            # Ctrl+[ = ESC
+            if key == Qt.Key_BracketLeft:
+                self._process.write(b"\x1b")
+                return
+            # Ctrl+] = GS
+            if key == Qt.Key_BracketRight:
+                self._process.write(b"\x1d")
+                return
+            # Ctrl+\ = FS
+            if key == Qt.Key_Backslash:
+                self._process.write(b"\x1c")
+                return
+
+        # Alt+key: send as ESC + key
+        if mods & Qt.AltModifier and text:
+            self._process.write(b"\x1b" + text.encode("utf-8"))
+            return
+
+        # Regular text
+        if text:
+            self._process.write(text.encode("utf-8"))
+            return
+
+        # Pass unhandled events up
+        super().keyPressEvent(event)
+
+    def _map_key(self, key, mods):
+        """Map a Qt key to a terminal escape sequence, or return None."""
+        # Check if application cursor key mode is active
+        app_cursor = 1 in self._screen.mode  # DECCKM
+
+        prefix = b"\x1bO" if app_cursor else b"\x1b["
+
+        keymap = {
+            Qt.Key_Return: b"\r",
+            Qt.Key_Enter: b"\r",
+            Qt.Key_Backspace: b"\x7f",
+            Qt.Key_Tab: b"\t",
+            Qt.Key_Escape: b"\x1b",
+            Qt.Key_Up: prefix + b"A",
+            Qt.Key_Down: prefix + b"B",
+            Qt.Key_Right: prefix + b"C",
+            Qt.Key_Left: prefix + b"D",
+            Qt.Key_Home: b"\x1b[H",
+            Qt.Key_End: b"\x1b[F",
+            Qt.Key_Insert: b"\x1b[2~",
+            Qt.Key_Delete: b"\x1b[3~",
+            Qt.Key_PageUp: b"\x1b[5~",
+            Qt.Key_PageDown: b"\x1b[6~",
+            Qt.Key_F1: b"\x1bOP",
+            Qt.Key_F2: b"\x1bOQ",
+            Qt.Key_F3: b"\x1bOR",
+            Qt.Key_F4: b"\x1bOS",
+            Qt.Key_F5: b"\x1b[15~",
+            Qt.Key_F6: b"\x1b[17~",
+            Qt.Key_F7: b"\x1b[18~",
+            Qt.Key_F8: b"\x1b[19~",
+            Qt.Key_F9: b"\x1b[20~",
+            Qt.Key_F10: b"\x1b[21~",
+            Qt.Key_F11: b"\x1b[23~",
+            Qt.Key_F12: b"\x1b[24~",
+        }
+
+        return keymap.get(key)
+
+    # --- Theme ---
+
+    def apply_theme(self, theme):
+        """Apply a new theme to this terminal."""
+        self._theme = theme
+        self.update()
+
+    # --- Session data ---
+
+    def get_session_data(self):
+        return {
+            "cwd": self.get_cwd(),
+            "title": self.get_title(),
+        }
+
+    # --- Cleanup ---
+
+    def terminate(self):
+        """Terminate the underlying process."""
+        self._cursor_timer.stop()
+        self._process.terminate()

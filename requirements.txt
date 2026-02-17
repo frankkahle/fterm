@@ -1,0 +1,4 @@
+PyQt5>=5.15
+pyte>=0.8
+ptyprocess>=0.7
+wcwidth>=0.2
