@@ -33,6 +33,20 @@ class TerminalScreen(pyte.HistoryScreen):
         self.icon_name = ""
         self._title_changed_callback = None
         self._bell_callback = None
+        self._write_callback = None  # write back to PTY for query responses
+
+    def set_write_callback(self, callback):
+        """Set callback to write data back to the PTY (for DSR/DA responses)."""
+        self._write_callback = callback
+
+    def write_process_input(self, data):
+        """Override pyte noop: actually write responses back to the PTY.
+
+        Called by pyte when the child process sends terminal queries
+        like DSR (ESC[6n) or DA (ESC[c) that expect a response.
+        """
+        if self._write_callback and data:
+            self._write_callback(data.encode("utf-8") if isinstance(data, str) else data)
 
     def set_title_callback(self, callback):
         self._title_changed_callback = callback
@@ -123,12 +137,15 @@ class TerminalWidget(QWidget):
         self._screen = TerminalScreen(self._cols, self._rows, history=scrollback)
         self._stream = pyte.ByteStream(self._screen)
 
-        # Title / bell callbacks
+        # Title / bell / write-back callbacks
         self._screen.set_title_callback(self._on_title_changed)
         self._screen.set_bell_callback(self._on_bell)
 
         # Process
         self._process = TerminalProcess(self)
+
+        # Connect write-back so pyte can respond to terminal queries (DSR, DA)
+        self._screen.set_write_callback(self._process.write)
         self._process.data_ready.connect(self._on_data_ready)
         self._process.process_exited.connect(self._on_process_exited)
 
