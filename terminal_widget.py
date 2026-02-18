@@ -25,6 +25,10 @@ _URL_RE = re.compile(
 _ANSI_COLOR_NAMES = {
     "black": 0, "red": 1, "green": 2, "brown": 3, "yellow": 3,
     "blue": 4, "magenta": 5, "cyan": 6, "white": 7,
+    "brightblack": 8, "brightred": 9, "brightgreen": 10,
+    "brightbrown": 11, "brightyellow": 11,
+    "brightblue": 12, "brightmagenta": 13, "brightcyan": 14,
+    "brightwhite": 15,
 }
 
 
@@ -271,7 +275,12 @@ class TerminalWidget(QWidget):
         """Start the shell process."""
         if shell is None:
             shell = self._settings.get_shell() if self._settings else "/bin/bash"
-        self._process.start(shell=shell, rows=self._rows, cols=self._cols, cwd=cwd)
+        # Tell shells whether background is light or dark via COLORFGBG
+        bg = QColor(self._theme.terminal_bg)
+        is_light = (bg.red() * 299 + bg.green() * 587 + bg.blue() * 114) / 1000 > 128
+        colorfgbg = "0;15" if is_light else "15;0"
+        self._process.start(shell=shell, rows=self._rows, cols=self._cols,
+                            cwd=cwd, colorfgbg=colorfgbg)
 
     def get_process(self):
         return self._process
@@ -365,24 +374,40 @@ class TerminalWidget(QWidget):
             idx = _ANSI_COLOR_NAMES[color]
             return get_ansi_palette(self._theme)[idx]
 
-        # 256-color index (string of digits)
-        if isinstance(color, str) and color.isdigit():
-            return get_xterm_256_color(int(color), self._theme)
+        if isinstance(color, str):
+            # 24-bit truecolor (hex string like "ff00aa") — check before
+            # isdigit() since all-digit hex strings like "999999" would
+            # otherwise be misinterpreted as a 256-color index.
+            if len(color) == 6:
+                try:
+                    r = int(color[0:2], 16)
+                    g = int(color[2:4], 16)
+                    b = int(color[4:6], 16)
+                    return QColor(r, g, b)
+                except ValueError:
+                    pass
 
-        # 24-bit truecolor (hex string like "ff00aa")
-        if isinstance(color, str) and len(color) == 6:
-            try:
-                r = int(color[0:2], 16)
-                g = int(color[2:4], 16)
-                b = int(color[4:6], 16)
-                return QColor(r, g, b)
-            except ValueError:
-                pass
+            # 256-color index (string of digits, 0-255)
+            if color.isdigit() and len(color) <= 3:
+                idx = int(color)
+                if idx <= 255:
+                    return get_xterm_256_color(idx, self._theme)
 
         # Fallback
         if is_fg:
             return QColor(self._theme.terminal_fg)
         return QColor(self._theme.terminal_bg)
+
+    @staticmethod
+    def _luminance(c):
+        """Perceived brightness (0-255) of a QColor."""
+        return (c.red() * 299 + c.green() * 587 + c.blue() * 114) / 1000
+
+    def _ensure_contrast(self, fg, bg):
+        """If fg is too close to bg, swap to the theme's opposite default."""
+        if abs(self._luminance(fg) - self._luminance(bg)) < 40:
+            return QColor(self._theme.terminal_fg)
+        return fg
 
     # --- Display row <-> data source mapping ---
 
@@ -565,14 +590,18 @@ class TerminalWidget(QWidget):
             fg = self._resolve_color(char.fg, is_fg=True)
             bg = self._resolve_color(char.bg, is_fg=False)
 
-            # Handle bold -> bright color mapping for named ANSI colors
+            # Handle bold -> bright color mapping for base ANSI colors (0-7)
             if char.bold and isinstance(char.fg, str) and char.fg in _ANSI_COLOR_NAMES:
-                idx = _ANSI_COLOR_NAMES[char.fg] + 8  # bright variant
-                fg = get_ansi_palette(self._theme)[idx]
+                idx = _ANSI_COLOR_NAMES[char.fg]
+                if idx < 8:
+                    fg = get_ansi_palette(self._theme)[idx + 8]
 
             # Reverse video
             if char.reverse:
                 fg, bg = bg, fg
+
+            # Ensure minimum contrast so text is never invisible
+            fg = self._ensure_contrast(fg, bg)
 
             # Selection highlighting
             in_sel = self._is_in_selection(display_row, col)
@@ -925,6 +954,35 @@ class TerminalWidget(QWidget):
         """Clear the screen (like 'clear' command)."""
         self._process.write(b"\x1b[2J\x1b[H")
 
+    def _debug_dump_colors(self):
+        """Dump fg/bg colors for visible screen rows to /tmp/fterm_debug.txt."""
+        lines = []
+        history_lines = self._get_history_lines()
+        for display_row in range(min(self._rows, 10)):
+            line_data, is_history = self._get_line_data(display_row, history_lines)
+            if line_data is None:
+                lines.append(f"Row {display_row}: None")
+                continue
+            row_info = []
+            for col in range(min(self._cols, 60)):
+                char = self._get_char_at(line_data, col, is_history)
+                ch = char.data if char.data else " "
+                if ch.strip():
+                    fg_resolved = self._resolve_color(char.fg, is_fg=True)
+                    bg_resolved = self._resolve_color(char.bg, is_fg=False)
+                    row_info.append(
+                        f"  [{col}] '{ch}' fg={char.fg!r}->{fg_resolved.name()} "
+                        f"bg={char.bg!r}->{bg_resolved.name()} "
+                        f"bold={char.bold} rev={char.reverse}"
+                    )
+            lines.append(f"Row {display_row} (hist={is_history}):")
+            lines.extend(row_info)
+        with open("/tmp/fterm_debug.txt", "w") as f:
+            f.write(f"Theme: {self._theme.name}\n")
+            f.write(f"terminal_fg: {self._theme.terminal_fg}\n")
+            f.write(f"terminal_bg: {self._theme.terminal_bg}\n\n")
+            f.write("\n".join(lines) + "\n")
+
     def _reset_terminal(self):
         """Full reset of terminal state."""
         self._screen.reset()
@@ -960,6 +1018,9 @@ class TerminalWidget(QWidget):
                 return
             elif key == Qt.Key_V:
                 self.paste_clipboard()
+                return
+            elif key == Qt.Key_D:
+                self._debug_dump_colors()
                 return
             # Let other Ctrl+Shift combos (T, W, F, Tab) propagate to MainWindow
             event.ignore()

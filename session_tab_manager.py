@@ -61,6 +61,7 @@ class SessionTabManager(QTabWidget):
 
         # Start the shell process
         terminal.start_process(shell=shell, cwd=cwd)
+        terminal.setFocus()
 
         self.tab_count_changed.emit(self.count())
         return terminal

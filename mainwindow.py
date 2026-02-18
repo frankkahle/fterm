@@ -374,6 +374,15 @@ class MainWindow(QMainWindow):
                 self.restoreState(QByteArray(base64.b64decode(state)))
             except Exception:
                 pass
+        # Ensure the window isn't placed off-screen or behind a desktop panel
+        screen = QApplication.primaryScreen()
+        if screen:
+            available = screen.availableGeometry()
+            frame = self.frameGeometry()
+            if frame.top() < available.top():
+                self.move(frame.left(), available.top())
+            if frame.left() < available.left():
+                self.move(available.left(), self.y())
 
     def _save_geometry(self):
         geo = base64.b64encode(bytes(self.saveGeometry())).decode("ascii")

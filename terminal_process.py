@@ -52,12 +52,17 @@ class TerminalProcess(QObject):
         self._reader = None
         self._running = False
 
-    def start(self, shell="/bin/bash", rows=24, cols=80, cwd=None):
+    def start(self, shell="/bin/bash", rows=24, cols=80, cwd=None, colorfgbg=None):
         """Spawn a shell process in a new PTY."""
         env = dict(os.environ)
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
         env.setdefault("LANG", "en_US.UTF-8")
+        if colorfgbg:
+            env["COLORFGBG"] = colorfgbg
+        # Remove parent session markers so tools like Claude Code don't
+        # refuse to run, thinking they are nested inside themselves.
+        env.pop("CLAUDECODE", None)
 
         if cwd and os.path.isdir(cwd):
             env["PWD"] = cwd
