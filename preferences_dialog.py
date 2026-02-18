@@ -130,6 +130,18 @@ class PreferencesDialog(QDialog):
         cursor_layout.addRow(self._cursor_blink_check)
 
         layout.addWidget(cursor_group)
+
+        # Padding group
+        padding_group = QGroupBox("Terminal")
+        padding_layout = QFormLayout(padding_group)
+
+        self._padding_spin = QSpinBox()
+        self._padding_spin.setRange(0, 32)
+        self._padding_spin.setSingleStep(2)
+        self._padding_spin.setValue(self._settings.get("terminal_padding", 4))
+        padding_layout.addRow("Padding (px):", self._padding_spin)
+
+        layout.addWidget(padding_group)
         layout.addStretch()
 
         self._tabs.addTab(tab, "Appearance")
@@ -164,6 +176,7 @@ class PreferencesDialog(QDialog):
         self._settings.set("font_size", self._font_size_spin.value())
         self._settings.set("cursor_style", self._cursor_style_combo.currentText())
         self._settings.set("cursor_blink", self._cursor_blink_check.isChecked())
+        self._settings.set("terminal_padding", self._padding_spin.value())
         self._settings.set("auto_save_session", self._auto_save_check.isChecked())
         self._settings.set("restore_session", self._restore_check.isChecked())
 

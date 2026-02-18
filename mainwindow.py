@@ -6,13 +6,14 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QMainWindow, QAction, QMenu, QToolBar, QStatusBar, QLabel,
-    QMessageBox, QApplication,
+    QMessageBox, QApplication, QVBoxLayout, QWidget,
 )
 from session_tab_manager import SessionTabManager
 from preferences_dialog import PreferencesDialog
 from session_manager import SessionManager
 from settings import Settings
 from themes import get_theme, get_theme_names, get_app_stylesheet
+from find_bar import FindBar
 
 
 class MainWindow(QMainWindow):
@@ -41,8 +42,20 @@ class MainWindow(QMainWindow):
         self._status_timer.start(1000)
 
     def _setup_central_widget(self):
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
         self._tab_manager = SessionTabManager(self._settings, self)
-        self.setCentralWidget(self._tab_manager)
+        layout.addWidget(self._tab_manager, 1)
+
+        self._find_bar = FindBar(self)
+        self._find_bar.find_requested.connect(self._on_find_requested)
+        self._find_bar.closed.connect(self._on_find_closed)
+        layout.addWidget(self._find_bar)
+
+        self.setCentralWidget(central)
 
     def _setup_connections(self):
         self._tab_manager.current_terminal_changed.connect(self._on_terminal_changed)
@@ -61,6 +74,7 @@ class MainWindow(QMainWindow):
         # Edit actions
         self._copy_action = self._make_action("Copy", "Ctrl+Shift+C", self._copy)
         self._paste_action = self._make_action("Paste", "Ctrl+Shift+V", self._paste)
+        self._find_action = self._make_action("Find", "Ctrl+Shift+F", self._show_find)
         self._select_all_action = self._make_action("Select All", None, self._select_all)
         self._clear_action = self._make_action("Clear", None, self._clear)
         self._reset_action = self._make_action("Reset", None, self._reset)
@@ -99,6 +113,8 @@ class MainWindow(QMainWindow):
         edit_menu = menubar.addMenu("&Edit")
         edit_menu.addAction(self._copy_action)
         edit_menu.addAction(self._paste_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self._find_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self._select_all_action)
         edit_menu.addSeparator()
@@ -202,6 +218,8 @@ class MainWindow(QMainWindow):
             self._apply_current_theme()
         elif key in ("font_family", "font_size"):
             self._apply_font_change()
+        elif key == "terminal_padding":
+            self._apply_padding_change()
 
     # --- Tab operations ---
 
@@ -252,6 +270,23 @@ class MainWindow(QMainWindow):
         terminal = self._tab_manager.current_terminal()
         if terminal:
             terminal._reset_terminal()
+
+    # --- Find ---
+
+    def _show_find(self):
+        self._find_bar.show_bar()
+
+    def _on_find_requested(self, query, forward):
+        terminal = self._tab_manager.current_terminal()
+        if terminal:
+            current, total = terminal.find_in_scrollback(query, forward)
+            self._find_bar.set_match_info(current, total)
+
+    def _on_find_closed(self):
+        terminal = self._tab_manager.current_terminal()
+        if terminal:
+            terminal.clear_selection()
+            terminal.setFocus()
 
     # --- View operations ---
 
@@ -313,6 +348,14 @@ class MainWindow(QMainWindow):
         for i in range(self._tab_manager.count()):
             terminal = self._tab_manager.widget(i)
             terminal.update_font(family, size)
+
+    def _apply_padding_change(self):
+        padding = self._settings.get("terminal_padding", 4)
+        for i in range(self._tab_manager.count()):
+            terminal = self._tab_manager.widget(i)
+            terminal._padding = padding
+            terminal._recalculate_grid()
+            terminal.update()
 
     # --- Window state ---
 

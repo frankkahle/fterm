@@ -1,17 +1,24 @@
 """Core terminal widget: renders terminal grid, handles input."""
 
+import re
 import pyte
 import pyte.modes as modes
 from wcwidth import wcwidth
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint, QRect
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint, QRect, QUrl
 from PyQt5.QtGui import (
     QPainter, QColor, QFont, QFontMetrics, QFontDatabase,
-    QKeySequence, QClipboard, QPen, QBrush,
+    QKeySequence, QClipboard, QPen, QBrush, QCursor, QDesktopServices,
 )
 from PyQt5.QtWidgets import QWidget, QApplication, QMenu, QAction, QScrollBar, QHBoxLayout
 
 from terminal_process import TerminalProcess
 from themes import get_theme, get_ansi_palette, get_xterm_256_color
+
+# URL regex for clickable link detection
+_URL_RE = re.compile(
+    r'https?://[^\s<>\'")\]}>]+|'
+    r'www\.[^\s<>\'")\]}>]+'
+)
 
 
 # Map pyte color names to ANSI indices
@@ -126,6 +133,7 @@ class TerminalWidget(QWidget):
         self._rows = 24
         self._cols = 80
         self._scrollback_offset = 0
+        self._padding = settings.get("terminal_padding", 4) if settings else 4
 
         # Theme/appearance
         theme_name = settings.get("theme", "Dark") if settings else "Dark"
@@ -175,6 +183,16 @@ class TerminalWidget(QWidget):
         self._bell_timer = QTimer(self)
         self._bell_timer.setSingleShot(True)
         self._bell_timer.timeout.connect(self._clear_bell)
+
+        # Triple-click timer (distinguish double from triple click)
+        self._click_count = 0
+        self._click_timer = QTimer(self)
+        self._click_timer.setSingleShot(True)
+        self._click_timer.setInterval(400)
+        self._click_timer.timeout.connect(self._reset_click_count)
+
+        # URL hover state
+        self._hovered_url = None  # (start_row, start_col, end_row, end_col, url_text)
 
         # Widget setup
         self.setFocusPolicy(Qt.StrongFocus)
@@ -310,9 +328,11 @@ class TerminalWidget(QWidget):
     def _recalculate_grid(self):
         """Recalculate rows/cols from widget size and resize PTY."""
         sb_width = self._scrollbar.width() if self._scrollbar.isVisible() else 0
-        available_width = self.width() - sb_width
+        pad = self._padding * 2
+        available_width = self.width() - sb_width - pad
+        available_height = self.height() - pad
         new_cols = max(2, available_width // self._cell_width)
-        new_rows = max(1, self.height() // self._cell_height)
+        new_rows = max(1, available_height // self._cell_height)
 
         if new_cols != self._cols or new_rows != self._rows:
             self._cols = new_cols
@@ -323,7 +343,7 @@ class TerminalWidget(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._recalculate_grid()
-        # Position scrollbar
+        # Position scrollbar (outside padding area)
         sb_width = 14
         self._scrollbar.setGeometry(
             self.width() - sb_width, 0, sb_width, self.height()
@@ -411,8 +431,8 @@ class TerminalWidget(QWidget):
 
     def _pos_to_cell(self, pos):
         """Convert a QPoint (widget coords) to (display_row, col)."""
-        col = max(0, min(pos.x() // self._cell_width, self._cols - 1))
-        row = max(0, min(pos.y() // self._cell_height, self._rows - 1))
+        col = max(0, min((pos.x() - self._padding) // self._cell_width, self._cols - 1))
+        row = max(0, min((pos.y() - self._padding) // self._cell_height, self._rows - 1))
         return (row, col)
 
     def _is_in_selection(self, display_row, col):
@@ -506,14 +526,20 @@ class TerminalWidget(QWidget):
             bg_color = bg_color.lighter(150)
         painter.fillRect(self.rect(), bg_color)
 
+        # Apply padding offset
+        painter.translate(self._padding, self._padding)
+
         screen = self._screen
         history_lines = self._get_history_lines()
+
+        # Build URL map for this paint cycle (for underline rendering)
+        url_cells = self._find_urls_on_screen(history_lines)
 
         for display_row in range(self._rows):
             line_data, is_history = self._get_line_data(display_row, history_lines)
             if line_data is None:
                 continue
-            self._paint_line(painter, display_row, line_data, is_history)
+            self._paint_line(painter, display_row, line_data, is_history, url_cells)
 
         # Draw cursor:
         # - Only when not scrolled back
@@ -525,7 +551,7 @@ class TerminalWidget(QWidget):
 
         painter.end()
 
-    def _paint_line(self, painter, display_row, line_data, is_history):
+    def _paint_line(self, painter, display_row, line_data, is_history, url_cells=None):
         """Paint one line from either screen buffer or history."""
         y = display_row * self._cell_height
         screen = self._screen
@@ -568,9 +594,14 @@ class TerminalWidget(QWidget):
             if bg != QColor(self._theme.terminal_bg) or in_sel:
                 painter.fillRect(cell_rect, bg)
 
+            # Check if this cell is part of a URL
+            is_url = url_cells and (display_row, col) in url_cells
+
             # Draw character
             if char_data.strip():
-                painter.setPen(fg)
+                # URL text gets a distinct color
+                draw_fg = QColor("#5599DD") if is_url and not in_sel else fg
+                painter.setPen(draw_fg)
                 font = QFont(self._font)
                 if char.bold:
                     font.setBold(True)
@@ -581,9 +612,12 @@ class TerminalWidget(QWidget):
                 if char.bold or char.italics:
                     painter.setFont(self._font)
 
-            # Underline
-            if char.underscore:
-                painter.setPen(fg)
+            # Underline (from terminal attr or URL hover)
+            is_hovered_url = (self._hovered_url and
+                              url_cells and (display_row, col) in url_cells and
+                              url_cells[(display_row, col)] == self._hovered_url[4])
+            if char.underscore or is_hovered_url:
+                painter.setPen(QColor("#5599DD") if is_hovered_url else fg)
                 underline_y = y + self._cell_height - 1
                 painter.drawLine(x, underline_y, x + self._cell_width * char_width, underline_y)
 
@@ -632,33 +666,174 @@ class TerminalWidget(QWidget):
         self._scrollback_offset = max(0, history_len - value)
         self.update()
 
+    # --- URL detection ---
+
+    def _get_line_text(self, display_row, history_lines=None):
+        """Get the text content of a display row as a string."""
+        line_data, is_history = self._get_line_data(display_row, history_lines)
+        if line_data is None:
+            return ""
+        chars = []
+        for col in range(self._cols):
+            char = self._get_char_at(line_data, col, is_history)
+            chars.append(char.data if char.data else " ")
+        return "".join(chars)
+
+    def _find_urls_on_screen(self, history_lines=None):
+        """Find all URLs on the visible screen. Returns {(row,col): url_text}."""
+        url_cells = {}
+        for display_row in range(self._rows):
+            line_text = self._get_line_text(display_row, history_lines)
+            for match in _URL_RE.finditer(line_text):
+                url_text = match.group()
+                for col in range(match.start(), match.end()):
+                    url_cells[(display_row, col)] = url_text
+        return url_cells
+
+    def _url_at_pos(self, display_row, col):
+        """Return the URL string at the given cell, or None."""
+        line_text = self._get_line_text(display_row)
+        for match in _URL_RE.finditer(line_text):
+            if match.start() <= col < match.end():
+                return match.group()
+        return None
+
+    def _reset_click_count(self):
+        self._click_count = 0
+
+    # --- Mouse reporting ---
+
+    def _mouse_reporting_active(self):
+        """Check if any mouse tracking mode is enabled."""
+        # X10 (9), X11 normal (1000), button (1002), any (1003)
+        return any(m in self._screen.mode for m in (9, 1000, 1002, 1003))
+
+    def _send_mouse_event(self, event, button, release=False):
+        """Send mouse event to the child process using SGR encoding."""
+        row, col = self._pos_to_cell(event.pos())
+        # SGR 1006 encoding: ESC[<button;col+1;row+1M (press) or m (release)
+        if 1006 in self._screen.mode:
+            suffix = "m" if release else "M"
+            seq = f"\x1b[<{button};{col+1};{row+1}{suffix}"
+            self._process.write(seq.encode())
+        else:
+            # Legacy X10/X11 encoding
+            if not release:
+                cb = button + 32
+                cx = col + 33
+                cy = row + 33
+                if cx < 256 and cy < 256:
+                    self._process.write(bytes([0x1b, 0x5b, 0x4d, cb, cx, cy]))
+
     # --- Mouse events ---
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            # Track clicks for triple-click detection
+            self._click_count += 1
+            self._click_timer.start()
+
+            # Ctrl+click on URL -> open in browser
+            if event.modifiers() & Qt.ControlModifier:
+                row, col = self._pos_to_cell(event.pos())
+                url = self._url_at_pos(row, col)
+                if url:
+                    if not url.startswith("http"):
+                        url = "http://" + url
+                    QDesktopServices.openUrl(QUrl(url))
+                    return
+
+            # Mouse reporting: send to child process
+            if self._mouse_reporting_active():
+                self._send_mouse_event(event, 0)
+                return
+
+            # Triple-click: select entire line
+            if self._click_count >= 3:
+                self._click_count = 0
+                display_row, _ = self._pos_to_cell(event.pos())
+                self._selection_start = (display_row, 0)
+                self._selection_end = (display_row, self._cols - 1)
+                self._selecting = False
+                self.update()
+                return
+
             self._selecting = True
             self._selection_start = self._pos_to_cell(event.pos())
             self._selection_end = self._selection_start
             self._double_click_word = False
             self.update()
 
+        elif event.button() == Qt.MiddleButton:
+            if self._mouse_reporting_active():
+                self._send_mouse_event(event, 1)
+                return
+            # Middle-click paste (X11 style)
+            self.paste_clipboard()
+
+        elif event.button() == Qt.RightButton:
+            if self._mouse_reporting_active():
+                self._send_mouse_event(event, 2)
+                return
+            # Right-click handled by contextMenuEvent
+
     def mouseMoveEvent(self, event):
+        # Mouse motion reporting (mode 1002 button, 1003 any)
+        if event.buttons() & Qt.LeftButton and self._mouse_reporting_active():
+            if 1002 in self._screen.mode or 1003 in self._screen.mode:
+                self._send_mouse_event(event, 32)  # button + motion flag
+            return
+        if not event.buttons() and 1003 in self._screen.mode:
+            self._send_mouse_event(event, 35)  # no button + motion
+            return
+
+        # URL hover detection (when Ctrl is held)
+        if event.modifiers() & Qt.ControlModifier:
+            row, col = self._pos_to_cell(event.pos())
+            url = self._url_at_pos(row, col)
+            if url:
+                if self._hovered_url is None or self._hovered_url[4] != url:
+                    self._hovered_url = (row, col, row, col, url)
+                    self.setCursor(QCursor(Qt.PointingHandCursor))
+                    self.update()
+            elif self._hovered_url is not None:
+                self._hovered_url = None
+                self.setCursor(QCursor(Qt.IBeamCursor))
+                self.update()
+        elif self._hovered_url is not None:
+            self._hovered_url = None
+            self.setCursor(QCursor(Qt.IBeamCursor))
+            self.update()
+
+        # Selection drag
         if self._selecting and event.buttons() & Qt.LeftButton:
             self._selection_end = self._pos_to_cell(event.pos())
             self.update()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
+            if self._mouse_reporting_active():
+                self._send_mouse_event(event, 0, release=True)
+                return
             self._selecting = False
             if self._selection_start == self._selection_end:
                 # Click without drag - clear selection
                 self._selection_start = None
                 self._selection_end = None
                 self.update()
+        elif event.button() == Qt.MiddleButton:
+            if self._mouse_reporting_active():
+                self._send_mouse_event(event, 1, release=True)
+        elif event.button() == Qt.RightButton:
+            if self._mouse_reporting_active():
+                self._send_mouse_event(event, 2, release=True)
 
     def mouseDoubleClickEvent(self, event):
         """Double-click selects a word."""
         if event.button() == Qt.LeftButton:
+            if self._mouse_reporting_active():
+                return  # Let app handle it
+
             display_row, col = self._pos_to_cell(event.pos())
             line_data, is_history = self._get_line_data(display_row)
 
@@ -695,10 +870,15 @@ class TerminalWidget(QWidget):
         if self._screen.in_alt_screen:
             # In alt screen (e.g., less, vim), send arrow keys to process
             delta = event.angleDelta().y()
-            if delta > 0:
-                self._process.write(b"\x1b[A" * 3)  # Up arrow x3
-            elif delta < 0:
-                self._process.write(b"\x1b[B" * 3)  # Down arrow x3
+            if self._mouse_reporting_active():
+                # Send wheel events as mouse button 64/65
+                btn = 64 if delta > 0 else 65
+                self._send_mouse_event(event, btn)
+            else:
+                if delta > 0:
+                    self._process.write(b"\x1b[A" * 3)  # Up arrow x3
+                elif delta < 0:
+                    self._process.write(b"\x1b[B" * 3)  # Down arrow x3
         else:
             # Normal mode: scroll through history
             delta = event.angleDelta().y()
@@ -753,6 +933,10 @@ class TerminalWidget(QWidget):
 
     # --- Keyboard input ---
 
+    def focusNextPrevChild(self, next):
+        """Prevent Tab/Shift+Tab from navigating away; let keyPressEvent handle them."""
+        return False
+
     def keyPressEvent(self, event):
         """Map Qt key events to terminal escape sequences."""
         key = event.key()
@@ -777,7 +961,7 @@ class TerminalWidget(QWidget):
             elif key == Qt.Key_V:
                 self.paste_clipboard()
                 return
-            # Let other Ctrl+Shift combos (T, W, Tab) propagate to MainWindow
+            # Let other Ctrl+Shift combos (T, W, F, Tab) propagate to MainWindow
             event.ignore()
             return
 
@@ -872,6 +1056,104 @@ class TerminalWidget(QWidget):
             "cwd": self.get_cwd(),
             "title": self.get_title(),
         }
+
+    # --- Find in scrollback ---
+
+    def find_in_scrollback(self, query, forward=True):
+        """Search scrollback + screen buffer for query. Returns (current_match, total_matches).
+
+        Scrolls to the first/next match and highlights it via selection.
+        """
+        if not query:
+            return (0, 0)
+
+        query_lower = query.lower()
+        history_lines = self._get_history_lines()
+        matches = []  # list of (absolute_row, start_col, end_col)
+
+        # Search history lines
+        for i, line in enumerate(history_lines):
+            text = ""
+            for col in range(self._cols):
+                if col < len(line):
+                    text += line[col].data if line[col].data else " "
+                else:
+                    text += " "
+            idx = 0
+            while True:
+                pos = text.lower().find(query_lower, idx)
+                if pos < 0:
+                    break
+                matches.append((-len(history_lines) + i, pos, pos + len(query) - 1))
+                idx = pos + 1
+
+        # Search screen buffer
+        for row in range(self._rows):
+            buf_row = self._screen.buffer.get(row, {})
+            text = ""
+            for col in range(self._cols):
+                char = buf_row.get(col, self._screen.default_char)
+                text += char.data if char.data else " "
+            idx = 0
+            while True:
+                pos = text.lower().find(query_lower, idx)
+                if pos < 0:
+                    break
+                matches.append((row, pos, pos + len(query) - 1))
+                idx = pos + 1
+
+        if not matches:
+            self.clear_selection()
+            return (0, 0)
+
+        # Find the best match relative to current scroll position
+        # Current view center in absolute coordinates
+        current_center = -self._scrollback_offset + self._rows // 2
+
+        # Find closest match to center in the given direction
+        best_idx = 0
+        if hasattr(self, '_last_find_idx') and self._last_find_query == query_lower:
+            if forward:
+                best_idx = (self._last_find_idx + 1) % len(matches)
+            else:
+                best_idx = (self._last_find_idx - 1) % len(matches)
+        else:
+            # First search: find closest match
+            min_dist = float('inf')
+            for i, (abs_row, sc, ec) in enumerate(matches):
+                dist = abs(abs_row - current_center)
+                if dist < min_dist:
+                    min_dist = dist
+                    best_idx = i
+
+        self._last_find_idx = best_idx
+        self._last_find_query = query_lower
+
+        abs_row, sc, ec = matches[best_idx]
+        history_len = len(history_lines)
+
+        # Scroll to make the match visible
+        if abs_row < 0:
+            # Match is in history
+            self._scrollback_offset = history_len + abs_row - self._rows // 2
+            self._scrollback_offset = max(0, min(self._scrollback_offset, history_len))
+        else:
+            # Match is on screen
+            self._scrollback_offset = 0
+
+        # Calculate display row and set selection
+        if self._scrollback_offset > 0:
+            display_row = abs_row + history_len - (history_len - self._scrollback_offset)
+        else:
+            display_row = abs_row
+
+        display_row = max(0, min(display_row, self._rows - 1))
+        self._selection_start = (display_row, sc)
+        self._selection_end = (display_row, ec)
+
+        self._update_scrollbar()
+        self.update()
+        return (best_idx + 1, len(matches))
 
     # --- Cleanup ---
 
