@@ -28,6 +28,7 @@ cp "${SCRIPT_DIR}/settings.py" "${APP_DIR}/"
 cp "${SCRIPT_DIR}/themes.py" "${APP_DIR}/"
 cp "${SCRIPT_DIR}/preferences_dialog.py" "${APP_DIR}/"
 cp "${SCRIPT_DIR}/session_manager.py" "${APP_DIR}/"
+cp "${SCRIPT_DIR}/find_bar.py" "${APP_DIR}/"
 cp "${SCRIPT_DIR}/requirements.txt" "${APP_DIR}/"
 cp "${SCRIPT_DIR}/resources/fterm.svg" "${APP_DIR}/resources/"
 
