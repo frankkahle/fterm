@@ -1,6 +1,7 @@
 """Main window for fterm: menus, toolbar, statusbar."""
 
 import os
+import sys
 import base64
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QKeySequence
@@ -19,9 +20,10 @@ from find_bar import FindBar
 class MainWindow(QMainWindow):
     """Main application window."""
 
-    def __init__(self, settings=None):
+    def __init__(self, settings=None, version=""):
         super().__init__()
         self._settings = settings or Settings()
+        self._version = version
         self._session_manager = SessionManager()
 
         self.setWindowTitle("fterm")
@@ -185,7 +187,7 @@ class MainWindow(QMainWindow):
             self._cwd_label.setText("")
             return
 
-        self._dims_label.setText(f"{terminal._cols}x{terminal._rows}")
+        self._dims_label.setText(f"{terminal.cols}x{terminal.rows}")
         shell = self._settings.get_shell()
         self._shell_label.setText(os.path.basename(shell))
         self._cwd_label.setText(terminal.get_cwd())
@@ -220,6 +222,18 @@ class MainWindow(QMainWindow):
             self._apply_font_change()
         elif key == "terminal_padding":
             self._apply_padding_change()
+
+    def tab_count(self):
+        """Public accessor for the number of open tabs."""
+        return self._tab_manager.count()
+
+    def new_tab(self, shell=None, cwd=None):
+        """Public method to create a new tab."""
+        return self._tab_manager.new_tab(shell=shell, cwd=cwd)
+
+    def apply_theme(self):
+        """Public method to apply the current theme."""
+        self._apply_current_theme()
 
     # --- Tab operations ---
 
@@ -264,12 +278,12 @@ class MainWindow(QMainWindow):
     def _clear(self):
         terminal = self._tab_manager.current_terminal()
         if terminal:
-            terminal._clear_terminal()
+            terminal.clear_terminal()
 
     def _reset(self):
         terminal = self._tab_manager.current_terminal()
         if terminal:
-            terminal._reset_terminal()
+            terminal.reset_terminal()
 
     # --- Find ---
 
@@ -320,11 +334,10 @@ class MainWindow(QMainWindow):
         dialog.exec_()
 
     def _show_about(self):
-        from main import VERSION
         QMessageBox.about(
             self,
             "About fterm",
-            f"<h2>fterm v{VERSION}</h2>"
+            f"<h2>fterm v{self._version}</h2>"
             "<p>A terminal emulator built from scratch</p>"
             "<p>Built with Python, PyQt5, and pyte</p>"
             "<p>&copy; SOS Tech Services</p>",
@@ -353,9 +366,7 @@ class MainWindow(QMainWindow):
         padding = self._settings.get("terminal_padding", 4)
         for i in range(self._tab_manager.count()):
             terminal = self._tab_manager.widget(i)
-            terminal._padding = padding
-            terminal._recalculate_grid()
-            terminal.update()
+            terminal.set_padding(padding)
 
     # --- Window state ---
 
@@ -366,14 +377,14 @@ class MainWindow(QMainWindow):
             from PyQt5.QtCore import QByteArray
             try:
                 self.restoreGeometry(QByteArray(base64.b64decode(geo)))
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"fterm: failed to restore window geometry: {e}", file=sys.stderr)
         if state:
             from PyQt5.QtCore import QByteArray
             try:
                 self.restoreState(QByteArray(base64.b64decode(state)))
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"fterm: failed to restore window state: {e}", file=sys.stderr)
         # Ensure the window isn't placed off-screen or behind a desktop panel
         screen = QApplication.primaryScreen()
         if screen:

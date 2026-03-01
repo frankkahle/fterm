@@ -264,30 +264,31 @@ def get_theme_names() -> list:
     return list(THEMES.keys())
 
 
+_ANSI_PALETTE_CACHE: Dict[str, List[QColor]] = {}
+
+
 def get_ansi_palette(theme: TerminalTheme) -> List[QColor]:
-    """Return 16-element QColor list for ANSI colors 0-15."""
-    return [
-        QColor(theme.black),
-        QColor(theme.red),
-        QColor(theme.green),
-        QColor(theme.yellow),
-        QColor(theme.blue),
-        QColor(theme.magenta),
-        QColor(theme.cyan),
-        QColor(theme.white),
-        QColor(theme.bright_black),
-        QColor(theme.bright_red),
-        QColor(theme.bright_green),
-        QColor(theme.bright_yellow),
-        QColor(theme.bright_blue),
-        QColor(theme.bright_magenta),
-        QColor(theme.bright_cyan),
-        QColor(theme.bright_white),
-    ]
-
-
-# Pre-computed xterm-256 color cube (indices 16-231) and grayscale (232-255)
-_XTERM_256_CACHE = None
+    """Return 16-element QColor list for ANSI colors 0-15 (cached per theme)."""
+    if theme.name not in _ANSI_PALETTE_CACHE:
+        _ANSI_PALETTE_CACHE[theme.name] = [
+            QColor(theme.black),
+            QColor(theme.red),
+            QColor(theme.green),
+            QColor(theme.yellow),
+            QColor(theme.blue),
+            QColor(theme.magenta),
+            QColor(theme.cyan),
+            QColor(theme.white),
+            QColor(theme.bright_black),
+            QColor(theme.bright_red),
+            QColor(theme.bright_green),
+            QColor(theme.bright_yellow),
+            QColor(theme.bright_blue),
+            QColor(theme.bright_magenta),
+            QColor(theme.bright_cyan),
+            QColor(theme.bright_white),
+        ]
+    return _ANSI_PALETTE_CACHE[theme.name]
 
 
 def get_xterm_256_color(index: int, theme: TerminalTheme) -> QColor:

@@ -3,7 +3,8 @@
 import json
 import os
 
-CONFIG_DIR = os.path.expanduser("~/.config/fterm")
+from settings import CONFIG_DIR
+
 SESSION_FILE = os.path.join(CONFIG_DIR, "session.json")
 
 

@@ -198,6 +198,10 @@ class TerminalWidget(QWidget):
         # URL hover state
         self._hovered_url = None  # (start_row, start_col, end_row, end_col, url_text)
 
+        # URL detection cache (invalidated on new data)
+        self._url_cache = None
+        self._url_cache_valid = False
+
         # Widget setup
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAttribute(Qt.WA_InputMethodEnabled, True)
@@ -230,6 +234,14 @@ class TerminalWidget(QWidget):
             self._cell_width = 8
         if self._cell_height < 1:
             self._cell_height = 16
+        # Pre-create font variants for bold/italic rendering
+        self._font_bold = QFont(self._font)
+        self._font_bold.setBold(True)
+        self._font_italic = QFont(self._font)
+        self._font_italic.setItalic(True)
+        self._font_bold_italic = QFont(self._font)
+        self._font_bold_italic.setBold(True)
+        self._font_bold_italic.setItalic(True)
 
     def update_font(self, family=None, size=None):
         """Update font and recalculate grid."""
@@ -285,6 +297,20 @@ class TerminalWidget(QWidget):
     def get_process(self):
         return self._process
 
+    @property
+    def cols(self):
+        return self._cols
+
+    @property
+    def rows(self):
+        return self._rows
+
+    def set_padding(self, padding):
+        """Set terminal padding and recalculate grid."""
+        self._padding = padding
+        self._recalculate_grid()
+        self.update()
+
     def get_cwd(self):
         return self._process.get_cwd()
 
@@ -296,6 +322,7 @@ class TerminalWidget(QWidget):
     def _on_data_ready(self, data):
         """Feed raw bytes from PTY into pyte, coalesce repaints."""
         self._stream.feed(data)
+        self._url_cache_valid = False
         self._update_scrollbar()
         # Auto-scroll to bottom on new output
         if self._scrollback_offset > 0 and not self._screen.in_alt_screen:
@@ -412,9 +439,9 @@ class TerminalWidget(QWidget):
     # --- Display row <-> data source mapping ---
 
     def _get_history_lines(self):
-        """Return the history top deque as a list (cached per paint cycle)."""
+        """Return the history top deque (direct reference, no copy)."""
         if hasattr(self._screen.history, 'top'):
-            return list(self._screen.history.top)
+            return self._screen.history.top
         return []
 
     def _get_line_data(self, display_row, history_lines=None):
@@ -631,12 +658,12 @@ class TerminalWidget(QWidget):
                 # URL text gets a distinct color
                 draw_fg = QColor("#5599DD") if is_url and not in_sel else fg
                 painter.setPen(draw_fg)
-                font = QFont(self._font)
-                if char.bold:
-                    font.setBold(True)
-                if char.italics:
-                    font.setItalic(True)
-                painter.setFont(font)
+                if char.bold and char.italics:
+                    painter.setFont(self._font_bold_italic)
+                elif char.bold:
+                    painter.setFont(self._font_bold)
+                elif char.italics:
+                    painter.setFont(self._font_italic)
                 painter.drawText(x, y + self._font_ascent, char_data)
                 if char.bold or char.italics:
                     painter.setFont(self._font)
@@ -693,6 +720,7 @@ class TerminalWidget(QWidget):
     def _on_scrollbar_changed(self, value):
         history_len = len(self._screen.history.top) if hasattr(self._screen.history, 'top') else 0
         self._scrollback_offset = max(0, history_len - value)
+        self._url_cache_valid = False
         self.update()
 
     # --- URL detection ---
@@ -710,6 +738,8 @@ class TerminalWidget(QWidget):
 
     def _find_urls_on_screen(self, history_lines=None):
         """Find all URLs on the visible screen. Returns {(row,col): url_text}."""
+        if self._url_cache_valid and self._url_cache is not None:
+            return self._url_cache
         url_cells = {}
         for display_row in range(self._rows):
             line_text = self._get_line_text(display_row, history_lines)
@@ -717,6 +747,8 @@ class TerminalWidget(QWidget):
                 url_text = match.group()
                 for col in range(match.start(), match.end()):
                     url_cells[(display_row, col)] = url_text
+        self._url_cache = url_cells
+        self._url_cache_valid = True
         return url_cells
 
     def _url_at_pos(self, display_row, col):
@@ -943,47 +975,18 @@ class TerminalWidget(QWidget):
         menu.addSeparator()
 
         clear_action = menu.addAction("Clear")
-        clear_action.triggered.connect(self._clear_terminal)
+        clear_action.triggered.connect(self.clear_terminal)
 
         reset_action = menu.addAction("Reset")
-        reset_action.triggered.connect(self._reset_terminal)
+        reset_action.triggered.connect(self.reset_terminal)
 
         menu.exec_(event.globalPos())
 
-    def _clear_terminal(self):
+    def clear_terminal(self):
         """Clear the screen (like 'clear' command)."""
         self._process.write(b"\x1b[2J\x1b[H")
 
-    def _debug_dump_colors(self):
-        """Dump fg/bg colors for visible screen rows to /tmp/fterm_debug.txt."""
-        lines = []
-        history_lines = self._get_history_lines()
-        for display_row in range(min(self._rows, 10)):
-            line_data, is_history = self._get_line_data(display_row, history_lines)
-            if line_data is None:
-                lines.append(f"Row {display_row}: None")
-                continue
-            row_info = []
-            for col in range(min(self._cols, 60)):
-                char = self._get_char_at(line_data, col, is_history)
-                ch = char.data if char.data else " "
-                if ch.strip():
-                    fg_resolved = self._resolve_color(char.fg, is_fg=True)
-                    bg_resolved = self._resolve_color(char.bg, is_fg=False)
-                    row_info.append(
-                        f"  [{col}] '{ch}' fg={char.fg!r}->{fg_resolved.name()} "
-                        f"bg={char.bg!r}->{bg_resolved.name()} "
-                        f"bold={char.bold} rev={char.reverse}"
-                    )
-            lines.append(f"Row {display_row} (hist={is_history}):")
-            lines.extend(row_info)
-        with open("/tmp/fterm_debug.txt", "w") as f:
-            f.write(f"Theme: {self._theme.name}\n")
-            f.write(f"terminal_fg: {self._theme.terminal_fg}\n")
-            f.write(f"terminal_bg: {self._theme.terminal_bg}\n\n")
-            f.write("\n".join(lines) + "\n")
-
-    def _reset_terminal(self):
+    def reset_terminal(self):
         """Full reset of terminal state."""
         self._screen.reset()
         self._scrollback_offset = 0
@@ -1018,9 +1021,6 @@ class TerminalWidget(QWidget):
                 return
             elif key == Qt.Key_V:
                 self.paste_clipboard()
-                return
-            elif key == Qt.Key_D:
-                self._debug_dump_colors()
                 return
             # Let other Ctrl+Shift combos (T, W, F, Tab) propagate to MainWindow
             event.ignore()
@@ -1064,44 +1064,50 @@ class TerminalWidget(QWidget):
         # Pass unhandled events up
         super().keyPressEvent(event)
 
+    # Static keymap for non-cursor keys (never changes)
+    _STATIC_KEYMAP = {
+        Qt.Key_Return: b"\r",
+        Qt.Key_Enter: b"\r",
+        Qt.Key_Backspace: b"\x7f",
+        Qt.Key_Tab: b"\t",
+        Qt.Key_Escape: b"\x1b",
+        Qt.Key_Home: b"\x1b[H",
+        Qt.Key_End: b"\x1b[F",
+        Qt.Key_Insert: b"\x1b[2~",
+        Qt.Key_Delete: b"\x1b[3~",
+        Qt.Key_PageUp: b"\x1b[5~",
+        Qt.Key_PageDown: b"\x1b[6~",
+        Qt.Key_F1: b"\x1bOP",
+        Qt.Key_F2: b"\x1bOQ",
+        Qt.Key_F3: b"\x1bOR",
+        Qt.Key_F4: b"\x1bOS",
+        Qt.Key_F5: b"\x1b[15~",
+        Qt.Key_F6: b"\x1b[17~",
+        Qt.Key_F7: b"\x1b[18~",
+        Qt.Key_F8: b"\x1b[19~",
+        Qt.Key_F9: b"\x1b[20~",
+        Qt.Key_F10: b"\x1b[21~",
+        Qt.Key_F12: b"\x1b[24~",
+    }
+
+    # Cursor keys depend on DECCKM mode
+    _CURSOR_KEYS = {
+        Qt.Key_Up: b"A",
+        Qt.Key_Down: b"B",
+        Qt.Key_Right: b"C",
+        Qt.Key_Left: b"D",
+    }
+
     def _map_key(self, key, mods):
         """Map a Qt key to a terminal escape sequence, or return None."""
-        # Check if application cursor key mode is active
-        app_cursor = 1 in self._screen.mode  # DECCKM
-
-        prefix = b"\x1bO" if app_cursor else b"\x1b["
-
-        keymap = {
-            Qt.Key_Return: b"\r",
-            Qt.Key_Enter: b"\r",
-            Qt.Key_Backspace: b"\x7f",
-            Qt.Key_Tab: b"\t",
-            Qt.Key_Escape: b"\x1b",
-            Qt.Key_Up: prefix + b"A",
-            Qt.Key_Down: prefix + b"B",
-            Qt.Key_Right: prefix + b"C",
-            Qt.Key_Left: prefix + b"D",
-            Qt.Key_Home: b"\x1b[H",
-            Qt.Key_End: b"\x1b[F",
-            Qt.Key_Insert: b"\x1b[2~",
-            Qt.Key_Delete: b"\x1b[3~",
-            Qt.Key_PageUp: b"\x1b[5~",
-            Qt.Key_PageDown: b"\x1b[6~",
-            Qt.Key_F1: b"\x1bOP",
-            Qt.Key_F2: b"\x1bOQ",
-            Qt.Key_F3: b"\x1bOR",
-            Qt.Key_F4: b"\x1bOS",
-            Qt.Key_F5: b"\x1b[15~",
-            Qt.Key_F6: b"\x1b[17~",
-            Qt.Key_F7: b"\x1b[18~",
-            Qt.Key_F8: b"\x1b[19~",
-            Qt.Key_F9: b"\x1b[20~",
-            Qt.Key_F10: b"\x1b[21~",
-            Qt.Key_F11: b"\x1b[23~",
-            Qt.Key_F12: b"\x1b[24~",
-        }
-
-        return keymap.get(key)
+        seq = self._STATIC_KEYMAP.get(key)
+        if seq is not None:
+            return seq
+        suffix = self._CURSOR_KEYS.get(key)
+        if suffix is not None:
+            prefix = b"\x1bO" if 1 in self._screen.mode else b"\x1b["
+            return prefix + suffix
+        return None
 
     # --- Theme ---
 

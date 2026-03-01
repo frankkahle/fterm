@@ -2,18 +2,21 @@
 
 A terminal emulator built from scratch with Python, PyQt5, and pyte.
 
-**Version 1.0.0** | **SOS Tech Services**
+**Version 1.2.0** | **SOS Tech Services**
 
 ## Features
 
 - **Full VT100/xterm emulation** via pyte — colored output, cursor movement, alt-screen apps (vim, htop, less, nano)
 - **Multiple tabs** — Ctrl+Shift+T to open, Ctrl+Shift+W to close, Ctrl+Tab to switch
 - **Right-click context menu** — Copy, Paste, Select All, Clear, Reset
-- **Mouse text selection** — click and drag, double-click to select word
+- **Find in scrollback** — Ctrl+Shift+F to search terminal history
+- **Mouse text selection** — click and drag, double-click to select word, triple-click to select line
+- **Mouse reporting** — SGR 1006 and legacy X10/X11 encoding for terminal apps
 - **Scrollback history** — mouse wheel to scroll, configurable buffer size (default 10,000 lines)
 - **256-color and truecolor support** — ANSI 16-color palette, xterm-256 color cube, 24-bit RGB
-- **Themes** — Dark, Light, and Solarized Dark built-in
-- **Configurable** — font, cursor style (block/underline/bar), cursor blink, scrollback size
+- **Themes** — Dark, Light, Solarized Dark, Dracula, Nord, Gruvbox, and Monokai
+- **URL detection** — Ctrl+click to open URLs in your browser
+- **Configurable** — font, cursor style (block/underline/bar), cursor blink, scrollback size, padding
 - **Session restore** — remembers open tabs and working directories across restarts
 - **Zoom** — Ctrl+Shift+=/- to zoom in/out
 - **Preferences dialog** — GUI settings for shell, appearance, and session options
@@ -71,6 +74,7 @@ fterm -n               # Start fresh (ignore saved session)
 | Ctrl+Shift+Tab | Previous tab |
 | Ctrl+Shift+C | Copy selection |
 | Ctrl+Shift+V | Paste |
+| Ctrl+Shift+F | Find in scrollback |
 | Ctrl+Shift+= | Zoom in |
 | Ctrl+Shift+- | Zoom out |
 | Ctrl+Shift+0 | Reset zoom |

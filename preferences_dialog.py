@@ -1,6 +1,7 @@
 """Preferences dialog for fterm settings."""
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
     QLabel, QComboBox, QSpinBox, QCheckBox, QLineEdit,
@@ -100,9 +101,7 @@ class PreferencesDialog(QDialog):
 
         self._font_combo = QFontComboBox()
         self._font_combo.setCurrentFont(
-            __import__("PyQt5.QtGui", fromlist=["QFont"]).QFont(
-                self._settings.get("font_family", "Monospace")
-            )
+            QFont(self._settings.get("font_family", "Monospace"))
         )
         font_layout.addRow("Font family:", self._font_combo)
 

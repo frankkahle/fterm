@@ -22,7 +22,7 @@ from PyQt5.QtGui import QIcon
 from settings import Settings
 from mainwindow import MainWindow
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 
 def parse_args():
@@ -69,7 +69,7 @@ def main():
         app.setWindowIcon(QIcon(icon_path))
 
     settings = Settings()
-    window = MainWindow(settings)
+    window = MainWindow(settings, version=VERSION)
 
     # Restore session or start fresh
     restored = False
@@ -77,15 +77,15 @@ def main():
         restored = window.restore_session()
 
     # Ensure at least one tab is open
-    if window._tab_manager.count() == 0:
+    if window.tab_count() == 0:
         shell = args.execute or None
         cwd = args.directory or None
-        window._tab_manager.new_tab(shell=shell, cwd=cwd)
+        window.new_tab(shell=shell, cwd=cwd)
 
     window.show()
 
     # Apply theme after show for proper rendering
-    window._apply_current_theme()
+    window.apply_theme()
 
     sys.exit(app.exec_())
 

@@ -4,7 +4,6 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QLineEdit, QPushButton, QLabel,
 )
-from PyQt5.QtGui import QKeySequence
 
 
 class FindBar(QWidget):
