@@ -283,8 +283,8 @@ class TerminalWidget(QWidget):
 
     # --- Process lifecycle ---
 
-    def start_process(self, shell=None, cwd=None):
-        """Start the shell process."""
+    def start_process(self, shell=None, cwd=None, command=None):
+        """Start the shell process (or an arbitrary command like ssh)."""
         if shell is None:
             shell = self._settings.get_shell() if self._settings else "/bin/bash"
         # Tell shells whether background is light or dark via COLORFGBG
@@ -292,7 +292,17 @@ class TerminalWidget(QWidget):
         is_light = (bg.red() * 299 + bg.green() * 587 + bg.blue() * 114) / 1000 > 128
         colorfgbg = "0;15" if is_light else "15;0"
         self._process.start(shell=shell, rows=self._rows, cols=self._cols,
-                            cwd=cwd, colorfgbg=colorfgbg)
+                            cwd=cwd, colorfgbg=colorfgbg, command=command)
+
+    # --- SSH session tracking ---
+
+    _ssh_session_id = None
+
+    def set_ssh_session_id(self, session_id):
+        self._ssh_session_id = session_id
+
+    def get_ssh_session_id(self):
+        return self._ssh_session_id
 
     def get_process(self):
         return self._process
@@ -1119,10 +1129,13 @@ class TerminalWidget(QWidget):
     # --- Session data ---
 
     def get_session_data(self):
-        return {
+        data = {
             "cwd": self.get_cwd(),
             "title": self.get_title(),
         }
+        if self._ssh_session_id:
+            data["ssh_session_id"] = self._ssh_session_id
+        return data
 
     # --- Find in scrollback ---
 

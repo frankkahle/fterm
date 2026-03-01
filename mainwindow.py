@@ -1,4 +1,4 @@
-"""Main window for fterm: menus, toolbar, statusbar."""
+"""Main window for fterm: menus, toolbar, statusbar, SSH sidebar."""
 
 import os
 import sys
@@ -7,7 +7,7 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QMainWindow, QAction, QMenu, QToolBar, QStatusBar, QLabel,
-    QMessageBox, QApplication, QVBoxLayout, QWidget,
+    QMessageBox, QApplication, QVBoxLayout, QWidget, QSplitter,
 )
 from session_tab_manager import SessionTabManager
 from preferences_dialog import PreferencesDialog
@@ -15,6 +15,9 @@ from session_manager import SessionManager
 from settings import Settings
 from themes import get_theme, get_theme_names, get_app_stylesheet
 from find_bar import FindBar
+from ssh_session_store import SSHSessionStore, SSHSession
+from ssh_sidebar import SSHSidebarPanel
+from ssh_dialogs import SSHSessionDialog, SSHGroupDialog, SSHImportDialog
 
 
 class MainWindow(QMainWindow):
@@ -25,6 +28,7 @@ class MainWindow(QMainWindow):
         self._settings = settings or Settings()
         self._version = version
         self._session_manager = SessionManager()
+        self._ssh_store = SSHSessionStore()
 
         self.setWindowTitle("fterm")
         self.resize(900, 600)
@@ -44,12 +48,23 @@ class MainWindow(QMainWindow):
         self._status_timer.start(1000)
 
     def _setup_central_widget(self):
-        central = QWidget()
-        layout = QVBoxLayout(central)
+        # Horizontal splitter: SSH sidebar (left) | terminal area (right)
+        self._splitter = QSplitter(Qt.Horizontal)
+        self._splitter.setChildrenCollapsible(False)
+
+        # SSH sidebar
+        self._ssh_sidebar = SSHSidebarPanel(self._ssh_store, self)
+        self._ssh_sidebar.setVisible(False)
+        self._splitter.addWidget(self._ssh_sidebar)
+
+        # Terminal area (tabs + find bar)
+        terminal_area = QWidget()
+        layout = QVBoxLayout(terminal_area)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         self._tab_manager = SessionTabManager(self._settings, self)
+        self._tab_manager.set_ssh_store(self._ssh_store)
         layout.addWidget(self._tab_manager, 1)
 
         self._find_bar = FindBar(self)
@@ -57,7 +72,14 @@ class MainWindow(QMainWindow):
         self._find_bar.closed.connect(self._on_find_closed)
         layout.addWidget(self._find_bar)
 
-        self.setCentralWidget(central)
+        self._splitter.addWidget(terminal_area)
+
+        # Set initial sizes: sidebar 220px, terminal gets the rest
+        self._splitter.setSizes([220, 680])
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
+
+        self.setCentralWidget(self._splitter)
 
     def _setup_connections(self):
         self._tab_manager.current_terminal_changed.connect(self._on_terminal_changed)
@@ -65,12 +87,24 @@ class MainWindow(QMainWindow):
         self._tab_manager.terminal_title_changed.connect(self._on_title_changed)
         self._settings.settings_changed.connect(self._on_settings_changed)
 
+        # SSH sidebar signals
+        self._ssh_sidebar.connect_requested.connect(self._ssh_connect_session)
+        self._ssh_sidebar.quick_connect_requested.connect(self._ssh_quick_connect)
+        self._ssh_sidebar.edit_session_requested.connect(self._ssh_edit_session)
+        self._ssh_sidebar.edit_group_requested.connect(self._ssh_edit_group)
+        self._ssh_sidebar.delete_session_requested.connect(self._ssh_delete_session)
+        self._ssh_sidebar.delete_group_requested.connect(self._ssh_delete_group)
+        self._ssh_sidebar.new_session_requested.connect(self._ssh_show_new_session)
+        self._ssh_sidebar.new_group_requested.connect(self._ssh_show_new_group)
+
     # --- Actions ---
 
     def _create_actions(self):
         # File actions
         self._new_tab_action = self._make_action("New Tab", "Ctrl+Shift+T", self._new_tab)
         self._close_tab_action = self._make_action("Close Tab", "Ctrl+Shift+W", self._close_tab)
+        self._ssh_connect_action = self._make_action("SSH Connect...", "Ctrl+Shift+S", self._ssh_show_new_session)
+        self._ssh_import_action = self._make_action("Import SSH Config...", None, self._ssh_import_config)
         self._exit_action = self._make_action("Exit", "Alt+F4", self.close)
 
         # Edit actions
@@ -87,6 +121,8 @@ class MainWindow(QMainWindow):
         self._zoom_reset_action = self._make_action("Reset Zoom", "Ctrl+Shift+0", self._zoom_reset)
         self._fullscreen_action = self._make_action("Full Screen", "F11", self._toggle_fullscreen)
         self._fullscreen_action.setCheckable(True)
+        self._ssh_panel_action = self._make_action("SSH Sessions Panel", "Ctrl+Shift+P", self._toggle_ssh_panel)
+        self._ssh_panel_action.setCheckable(True)
 
         # Tab switching
         self._next_tab_action = self._make_action("Next Tab", "Ctrl+Tab", self._next_tab)
@@ -109,6 +145,9 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._new_tab_action)
         file_menu.addAction(self._close_tab_action)
         file_menu.addSeparator()
+        file_menu.addAction(self._ssh_connect_action)
+        file_menu.addAction(self._ssh_import_action)
+        file_menu.addSeparator()
         file_menu.addAction(self._exit_action)
 
         # Edit menu
@@ -125,6 +164,8 @@ class MainWindow(QMainWindow):
 
         # View menu
         view_menu = menubar.addMenu("&View")
+        view_menu.addAction(self._ssh_panel_action)
+        view_menu.addSeparator()
         view_menu.addAction(self._zoom_in_action)
         view_menu.addAction(self._zoom_out_action)
         view_menu.addAction(self._zoom_reset_action)
@@ -154,6 +195,7 @@ class MainWindow(QMainWindow):
         toolbar.setFloatable(False)
 
         toolbar.addAction(self._new_tab_action)
+        toolbar.addAction(self._ssh_connect_action)
         toolbar.addSeparator()
         toolbar.addAction(self._copy_action)
         toolbar.addAction(self._paste_action)
@@ -166,6 +208,10 @@ class MainWindow(QMainWindow):
     def _create_statusbar(self):
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
+
+        self._ssh_info_label = QLabel("")
+        self._ssh_info_label.setMinimumWidth(100)
+        self._statusbar.addPermanentWidget(self._ssh_info_label)
 
         self._dims_label = QLabel("80x24")
         self._dims_label.setMinimumWidth(80)
@@ -185,12 +231,28 @@ class MainWindow(QMainWindow):
             self._dims_label.setText("")
             self._shell_label.setText("")
             self._cwd_label.setText("")
+            self._ssh_info_label.setText("")
             return
 
         self._dims_label.setText(f"{terminal.cols}x{terminal.rows}")
         shell = self._settings.get_shell()
         self._shell_label.setText(os.path.basename(shell))
         self._cwd_label.setText(terminal.get_cwd())
+
+        # SSH info
+        ssh_id = terminal.get_ssh_session_id()
+        if ssh_id:
+            session = self._ssh_store.get_session(ssh_id)
+            if session:
+                label = "SSH: "
+                if session.username:
+                    label += f"{session.username}@"
+                label += session.host
+                self._ssh_info_label.setText(label)
+            else:
+                self._ssh_info_label.setText("SSH")
+        else:
+            self._ssh_info_label.setText("")
 
     # --- Signal handlers ---
 
@@ -327,6 +389,131 @@ class MainWindow(QMainWindow):
             self.showFullScreen()
             self._fullscreen_action.setChecked(True)
 
+    # --- SSH panel ---
+
+    def _toggle_ssh_panel(self):
+        visible = not self._ssh_sidebar.isVisible()
+        self._ssh_sidebar.setVisible(visible)
+        self._ssh_panel_action.setChecked(visible)
+
+    # --- SSH operations ---
+
+    def _ssh_connect_session(self, session):
+        """Open a new tab connected to the given SSH session."""
+        self._tab_manager.new_ssh_tab(session)
+
+    def _ssh_quick_connect(self, text):
+        """Parse quick connect string and open SSH tab."""
+        session = self._parse_quick_connect(text)
+        if session:
+            self._ssh_store.add_session(session)
+            self._ssh_sidebar.refresh()
+            self._tab_manager.new_ssh_tab(session)
+
+    def _parse_quick_connect(self, text):
+        """Parse 'user@host[:port]' into an SSHSession."""
+        text = text.strip()
+        if not text:
+            return None
+
+        username = ""
+        host = text
+        port = 22
+
+        # Extract user@
+        if "@" in host:
+            username, host = host.split("@", 1)
+
+        # Extract :port
+        if ":" in host:
+            parts = host.rsplit(":", 1)
+            host = parts[0]
+            try:
+                port = int(parts[1])
+            except ValueError:
+                pass
+
+        if not host:
+            return None
+
+        return SSHSession(
+            host=host,
+            port=port,
+            username=username,
+            auth_method="password",
+        )
+
+    def _ssh_show_new_session(self):
+        """Show dialog to create a new SSH session."""
+        dialog = SSHSessionDialog(self._ssh_store, parent=self)
+        if dialog.exec_() == dialog.Accepted:
+            session = dialog.get_session()
+            self._ssh_sidebar.refresh()
+            if session:
+                self._ssh_connect_session(session)
+
+    def _ssh_edit_session(self, session):
+        """Show dialog to edit an existing SSH session."""
+        dialog = SSHSessionDialog(self._ssh_store, session=session, parent=self)
+        if dialog.exec_() == dialog.Accepted:
+            self._ssh_sidebar.refresh()
+
+    def _ssh_delete_session(self, session):
+        """Delete an SSH session after confirmation."""
+        reply = QMessageBox.question(
+            self, "Delete Session",
+            f"Delete SSH session '{session.display_name()}'?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            self._ssh_store.delete_session(session.id)
+            self._ssh_sidebar.refresh()
+
+    def _ssh_show_new_group(self):
+        """Show dialog to create a new SSH group."""
+        dialog = SSHGroupDialog(self._ssh_store, parent=self)
+        if dialog.exec_() == dialog.Accepted:
+            self._ssh_sidebar.refresh()
+
+    def _ssh_edit_group(self, group):
+        """Show dialog to edit an existing SSH group."""
+        dialog = SSHGroupDialog(self._ssh_store, group=group, parent=self)
+        if dialog.exec_() == dialog.Accepted:
+            self._ssh_sidebar.refresh()
+
+    def _ssh_delete_group(self, group):
+        """Delete an SSH group after confirmation."""
+        reply = QMessageBox.question(
+            self, "Delete Group",
+            f"Delete group '{group.name}'? Sessions will be moved to ungrouped.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            self._ssh_store.delete_group(group.id)
+            self._ssh_sidebar.refresh()
+
+    def _ssh_import_config(self):
+        """Import sessions from ~/.ssh/config."""
+        candidates = self._ssh_store.import_ssh_config()
+        if not candidates:
+            QMessageBox.information(
+                self, "Import SSH Config",
+                "No new sessions found in ~/.ssh/config.",
+            )
+            return
+
+        dialog = SSHImportDialog(candidates, parent=self)
+        if dialog.exec_() == dialog.Accepted:
+            selected = dialog.get_selected()
+            for session in selected:
+                self._ssh_store.add_session(session)
+            self._ssh_sidebar.refresh()
+            if selected:
+                QMessageBox.information(
+                    self, "Import SSH Config",
+                    f"Imported {len(selected)} session(s).",
+                )
+
     # --- Tools ---
 
     def _show_preferences(self):
@@ -411,6 +598,9 @@ class MainWindow(QMainWindow):
     # --- Close event ---
 
     def closeEvent(self, event):
+        # Save expanded state of SSH sidebar groups
+        self._ssh_sidebar.save_expanded_state()
+
         # Save session
         if self._settings.get("auto_save_session", True):
             self._session_manager.save_session(self._tab_manager)

@@ -52,8 +52,13 @@ class TerminalProcess(QObject):
         self._reader = None
         self._running = False
 
-    def start(self, shell="/bin/bash", rows=24, cols=80, cwd=None, colorfgbg=None):
-        """Spawn a shell process in a new PTY."""
+    def start(self, shell="/bin/bash", rows=24, cols=80, cwd=None, colorfgbg=None,
+              command=None):
+        """Spawn a shell (or arbitrary command) in a new PTY.
+
+        If *command* is provided (a list of strings), it is spawned directly
+        instead of the shell.  This is used for SSH sessions.
+        """
         env = dict(os.environ)
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
@@ -67,8 +72,10 @@ class TerminalProcess(QObject):
         if cwd and os.path.isdir(cwd):
             env["PWD"] = cwd
 
+        argv = command if command else [shell]
+
         self._pty = ptyprocess.PtyProcess.spawn(
-            [shell],
+            argv,
             dimensions=(rows, cols),
             env=env,
             cwd=cwd,

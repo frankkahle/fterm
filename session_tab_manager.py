@@ -66,6 +66,29 @@ class SessionTabManager(QTabWidget):
         self.tab_count_changed.emit(self.count())
         return terminal
 
+    def new_ssh_tab(self, ssh_session, tab_title=None):
+        """Create a new tab that runs an SSH session."""
+        terminal = TerminalWidget(settings=self._settings, parent=self)
+
+        terminal.title_changed.connect(
+            lambda title, t=terminal: self._on_title_changed(t, title)
+        )
+        terminal.process_exited.connect(
+            lambda status, t=terminal: self._on_process_exited(t, status)
+        )
+
+        title = tab_title or ssh_session.display_name()
+        self._tab_counter += 1
+        index = self.addTab(terminal, title)
+        self.setCurrentIndex(index)
+
+        terminal.set_ssh_session_id(ssh_session.id)
+        terminal.start_process(command=ssh_session.build_command())
+        terminal.setFocus()
+
+        self.tab_count_changed.emit(self.count())
+        return terminal
+
     def close_tab(self, index=None):
         """Close a tab and terminate its process."""
         if index is None:
@@ -152,9 +175,21 @@ class SessionTabManager(QTabWidget):
             "active_index": self.currentIndex(),
         }
 
+    def set_ssh_store(self, store):
+        """Set the SSH session store for session restore."""
+        self._ssh_store = store
+
     def restore_session_data(self, data):
         """Restore tabs from session data."""
+        ssh_store = getattr(self, "_ssh_store", None)
+
         for tab_data in data.get("tabs", []):
+            ssh_id = tab_data.get("ssh_session_id")
+            if ssh_id and ssh_store:
+                session = ssh_store.get_session(ssh_id)
+                if session:
+                    self.new_ssh_tab(session)
+                    continue
             cwd = tab_data.get("cwd")
             if cwd and os.path.isdir(cwd):
                 self.new_tab(cwd=cwd)

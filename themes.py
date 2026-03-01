@@ -460,4 +460,30 @@ def get_app_stylesheet(theme: TerminalTheme) -> str:
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
             height: 0px;
         }}
+        QTreeWidget {{
+            background-color: {theme.terminal_bg};
+            color: {theme.terminal_fg};
+            border: 1px solid {theme.border_color};
+            outline: none;
+        }}
+        QTreeWidget::item {{
+            padding: 3px 0;
+        }}
+        QTreeWidget::item:selected {{
+            background-color: {theme.selection_bg};
+            color: {theme.selection_fg};
+        }}
+        QTreeWidget::item:hover {{
+            background-color: {theme.selection_bg};
+        }}
+        QTreeWidget::branch {{
+            background-color: {theme.terminal_bg};
+        }}
+        QSplitter::handle {{
+            background-color: {theme.border_color};
+            width: 1px;
+        }}
+        QSplitter::handle:hover {{
+            background-color: {theme.selection_bg};
+        }}
     """
