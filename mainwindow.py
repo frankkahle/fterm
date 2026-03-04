@@ -54,7 +54,7 @@ class MainWindow(QMainWindow):
 
         # SSH sidebar
         self._ssh_sidebar = SSHSidebarPanel(self._ssh_store, self)
-        self._ssh_sidebar.setVisible(False)
+        self._ssh_sidebar.setVisible(True)
         self._splitter.addWidget(self._ssh_sidebar)
 
         # Terminal area (tabs + find bar)
@@ -124,6 +124,7 @@ class MainWindow(QMainWindow):
         self._fullscreen_action.setCheckable(True)
         self._ssh_panel_action = self._make_action("SSH Sessions Panel", "Ctrl+Shift+P", self._toggle_ssh_panel)
         self._ssh_panel_action.setCheckable(True)
+        self._ssh_panel_action.setChecked(True)
 
         # Tab switching
         self._next_tab_action = self._make_action("Next Tab", "Ctrl+Tab", self._next_tab)
