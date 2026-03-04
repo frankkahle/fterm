@@ -6,3 +6,8 @@ __pycache__/
 *.swp
 *.swo
 *~
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
