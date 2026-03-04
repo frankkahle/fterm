@@ -230,13 +230,15 @@ class SSHGroupDialog(QDialog):
 
 
 class SSHImportDialog(QDialog):
-    """Dialog for importing sessions from ~/.ssh/config."""
+    """Dialog for importing sessions from ~/.ssh/config or Remmina."""
 
-    def __init__(self, candidates, parent=None):
+    def __init__(self, candidates, parent=None, title=None, label=None):
         super().__init__(parent)
         self._candidates = candidates
+        self._title = title or "Import SSH Config"
+        self._label = label or "Select sessions to import from ~/.ssh/config:"
 
-        self.setWindowTitle("Import SSH Config")
+        self.setWindowTitle(self._title)
         self.setMinimumWidth(450)
         self.setMinimumHeight(350)
         self._setup_ui()
@@ -244,7 +246,7 @@ class SSHImportDialog(QDialog):
     def _setup_ui(self):
         layout = QVBoxLayout(self)
 
-        layout.addWidget(QLabel("Select sessions to import from ~/.ssh/config:"))
+        layout.addWidget(QLabel(self._label))
 
         self._list = QListWidget()
         for candidate in self._candidates:

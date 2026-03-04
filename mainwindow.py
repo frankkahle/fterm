@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
         # Status bar update timer
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._update_statusbar)
-        self._status_timer.start(1000)
+        self._status_timer.start(2000)
 
     def _setup_central_widget(self):
         # Horizontal splitter: SSH sidebar (left) | terminal area (right)
@@ -105,6 +105,7 @@ class MainWindow(QMainWindow):
         self._close_tab_action = self._make_action("Close Tab", "Ctrl+Shift+W", self._close_tab)
         self._ssh_connect_action = self._make_action("SSH Connect...", "Ctrl+Shift+S", self._ssh_show_new_session)
         self._ssh_import_action = self._make_action("Import SSH Config...", None, self._ssh_import_config)
+        self._ssh_import_remmina_action = self._make_action("Import from Remmina...", None, self._ssh_import_remmina)
         self._exit_action = self._make_action("Exit", "Alt+F4", self.close)
 
         # Edit actions
@@ -147,6 +148,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self._ssh_connect_action)
         file_menu.addAction(self._ssh_import_action)
+        file_menu.addAction(self._ssh_import_remmina_action)
         file_menu.addSeparator()
         file_menu.addAction(self._exit_action)
 
@@ -511,6 +513,49 @@ class MainWindow(QMainWindow):
             if selected:
                 QMessageBox.information(
                     self, "Import SSH Config",
+                    f"Imported {len(selected)} session(s).",
+                )
+
+    def _ssh_import_remmina(self):
+        """Import SSH sessions from Remmina."""
+        candidates = self._ssh_store.import_remmina()
+        if not candidates:
+            QMessageBox.information(
+                self, "Import from Remmina",
+                "No new SSH sessions found in Remmina.",
+            )
+            return
+
+        dialog = SSHImportDialog(candidates, parent=self,
+                                 title="Import from Remmina",
+                                 label="Select SSH sessions to import from Remmina:")
+        if dialog.exec_() == dialog.Accepted:
+            selected = dialog.get_selected()
+            # Create groups from Remmina group names
+            group_map = {}  # group_name -> group_id
+            for session in selected:
+                gname = getattr(session, "_remmina_group", "")
+                if gname and gname not in group_map:
+                    # Check if group already exists
+                    existing = [g for g in self._ssh_store.groups() if g.name == gname]
+                    if existing:
+                        group_map[gname] = existing[0].id
+                    else:
+                        from ssh_session_store import SSHGroup
+                        group = SSHGroup(name=gname)
+                        self._ssh_store.add_group(group)
+                        group_map[gname] = group.id
+
+            for session in selected:
+                gname = getattr(session, "_remmina_group", "")
+                if gname and gname in group_map:
+                    session.group_id = group_map[gname]
+                self._ssh_store.add_session(session)
+
+            self._ssh_sidebar.refresh()
+            if selected:
+                QMessageBox.information(
+                    self, "Import from Remmina",
                     f"Imported {len(selected)} session(s).",
                 )
 

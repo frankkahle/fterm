@@ -1,6 +1,7 @@
 """PTY + shell process management for fterm."""
 
 import os
+import select
 import signal
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 import ptyprocess
@@ -18,12 +19,21 @@ class PtyReaderThread(QThread):
         self._running = True
 
     def run(self):
+        fd = self._pty.fd
         try:
             while self._running and self._pty.isalive():
                 try:
+                    # Wait for data to be available before reading, so we
+                    # never busy-loop when the PTY is idle.
+                    ready, _, _ = select.select([fd], [], [], 0.1)
+                    if not ready:
+                        continue
                     data = self._pty.read(65536)
                     if data:
                         self.data_received.emit(data)
+                    else:
+                        # Empty read = EOF on BSD/Solaris
+                        break
                 except EOFError:
                     break
                 except OSError:

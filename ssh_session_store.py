@@ -1,5 +1,7 @@
 """SSH session data persistence for fterm."""
 
+import configparser
+import glob
 import json
 import os
 import re
@@ -252,3 +254,79 @@ class SSHSessionStore:
             identity_file=data.get("identity_file", ""),
         )
         candidates.append(session)
+
+    # --- Remmina import ---
+
+    def import_remmina(self, remmina_dir=None) -> List[SSHSession]:
+        """Parse Remmina .remmina files and return SSH candidate sessions."""
+        if remmina_dir is None:
+            # Check common locations
+            for candidate_dir in [
+                os.path.expanduser("~/.local/share/remmina"),
+                os.path.expanduser("~/.remmina"),
+            ]:
+                if os.path.isdir(candidate_dir):
+                    remmina_dir = candidate_dir
+                    break
+        if not remmina_dir or not os.path.isdir(remmina_dir):
+            return []
+
+        existing_hosts = {(s.host, s.port, s.username) for s in self._sessions}
+        candidates = []
+
+        for filepath in sorted(glob.glob(os.path.join(remmina_dir, "*.remmina"))):
+            try:
+                cfg = configparser.ConfigParser()
+                cfg.read(filepath)
+                if not cfg.has_section("remmina"):
+                    continue
+                r = cfg["remmina"]
+
+                # Only import SSH connections
+                if r.get("protocol", "").upper() != "SSH":
+                    continue
+
+                name = r.get("name", "")
+                server = r.get("server", "")
+                username = r.get("username", "")
+                group_name = r.get("group", "")
+                identity_file = r.get("ssh_privatekey", "")
+                exec_cmd = r.get("exec", "")
+
+                if not server:
+                    continue
+
+                # Parse host:port
+                host = server
+                port = 22
+                if ":" in server:
+                    parts = server.rsplit(":", 1)
+                    host = parts[0]
+                    try:
+                        port = int(parts[1])
+                    except ValueError:
+                        pass
+
+                # Dedupe
+                if (host, port, username) in existing_hosts:
+                    continue
+
+                auth_method = "key" if identity_file else "password"
+
+                session = SSHSession(
+                    name=name,
+                    host=host,
+                    port=port,
+                    username=username,
+                    auth_method=auth_method,
+                    identity_file=identity_file,
+                    startup_command=exec_cmd,
+                )
+                # Stash group name for caller to use
+                session._remmina_group = group_name
+                candidates.append(session)
+
+            except (configparser.Error, OSError):
+                continue
+
+        return candidates

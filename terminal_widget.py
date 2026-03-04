@@ -14,6 +14,9 @@ from PyQt5.QtWidgets import QWidget, QApplication, QMenu, QAction, QScrollBar, Q
 from terminal_process import TerminalProcess
 from themes import get_theme, get_ansi_palette, get_xterm_256_color
 
+# Pre-built QColor for URL link rendering (avoid repeated hex parsing)
+_URL_LINK_COLOR = QColor("#5599DD")
+
 # URL regex for clickable link detection
 _URL_RE = re.compile(
     r'https?://[^\s<>\'")\]}>]+|'
@@ -173,7 +176,7 @@ class TerminalWidget(QWidget):
         self._repaint_pending = False
         self._repaint_timer = QTimer(self)
         self._repaint_timer.setSingleShot(True)
-        self._repaint_timer.setInterval(8)  # ~120 fps max
+        self._repaint_timer.setInterval(16)  # ~60 fps max
         self._repaint_timer.timeout.connect(self._flush_repaint)
 
         # Selection state — coordinates are display-row based (what's visible)
@@ -197,6 +200,12 @@ class TerminalWidget(QWidget):
 
         # URL hover state
         self._hovered_url = None  # (start_row, start_col, end_row, end_col, url_text)
+
+        # Dirty-line tracking: only repaint lines that changed
+        self._dirty_all = True  # first paint is always full
+
+        # QColor cache: avoid recreating QColor objects every cell every paint
+        self._color_cache = {}
 
         # URL detection cache (invalidated on new data)
         self._url_cache = None
@@ -337,6 +346,7 @@ class TerminalWidget(QWidget):
         # Auto-scroll to bottom on new output
         if self._scrollback_offset > 0 and not self._screen.in_alt_screen:
             self._scrollback_offset = 0
+            self._dirty_all = True
         # Coalesce: schedule a repaint if one isn't already pending
         if not self._repaint_pending:
             self._repaint_pending = True
@@ -345,7 +355,19 @@ class TerminalWidget(QWidget):
     def _flush_repaint(self):
         """Execute the coalesced repaint."""
         self._repaint_pending = False
-        self.update()
+        dirty = self._screen.dirty
+        if self._dirty_all:
+            self.update()
+        else:
+            # Only repaint dirty line regions
+            for row in dirty:
+                y = self._padding + row * self._cell_height
+                self.update(QRect(0, y, self.width(), self._cell_height))
+            # Always repaint cursor row (cursor may have moved)
+            cy = self._padding + self._screen.cursor.y * self._cell_height
+            self.update(QRect(0, cy, self.width(), self._cell_height))
+        self._dirty_all = False
+        self._screen.dirty.clear()
 
     def _on_process_exited(self, status):
         self.process_exited.emit(status)
@@ -356,18 +378,37 @@ class TerminalWidget(QWidget):
     def _on_bell(self):
         """Visual bell: briefly flash background."""
         self._bell_active = True
+        self._dirty_all = True
         self.update()
         self._bell_timer.start(120)
 
     def _clear_bell(self):
         self._bell_active = False
+        self._dirty_all = True
         self.update()
 
     # --- Cursor blink ---
 
     def _toggle_cursor(self):
         self._cursor_visible = not self._cursor_visible
-        self.update()
+        # Only repaint the cursor cell, not the entire widget
+        cx = self._padding + self._screen.cursor.x * self._cell_width
+        cy = self._padding + self._screen.cursor.y * self._cell_height
+        self.update(QRect(cx, cy, self._cell_width, self._cell_height))
+
+    # --- Visibility management ---
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Resume cursor blink when tab becomes visible
+        if self._settings and self._settings.get("cursor_blink", True):
+            if not self._cursor_timer.isActive():
+                self._cursor_timer.start(530)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        # Pause cursor blink on hidden tabs to save CPU
+        self._cursor_timer.stop()
 
     # --- Grid calculations ---
 
@@ -395,10 +436,22 @@ class TerminalWidget(QWidget):
             self.width() - sb_width, 0, sb_width, self.height()
         )
         self._update_scrollbar()
+        self._dirty_all = True
 
     # --- Color resolution ---
 
     def _resolve_color(self, color, is_fg=True):
+        """Resolve a pyte color spec to a QColor (cached)."""
+        key = (color, is_fg)
+        cached = self._color_cache.get(key)
+        if cached is not None:
+            return cached
+
+        result = self._resolve_color_uncached(color, is_fg)
+        self._color_cache[key] = result
+        return result
+
+    def _resolve_color_uncached(self, color, is_fg=True):
         """Resolve a pyte color spec to a QColor."""
         if color == "default":
             if is_fg:
@@ -542,6 +595,30 @@ class TerminalWidget(QWidget):
 
         return "\n".join(lines)
 
+    def _get_normalized_selection(self):
+        """Return (sr, sc, er, ec) with start <= end, or None."""
+        if self._selection_start is None or self._selection_end is None:
+            return None
+        sr, sc = self._selection_start
+        er, ec = self._selection_end
+        if (sr, sc) > (er, ec):
+            return (er, ec, sr, sc)
+        return (sr, sc, er, ec)
+
+    @staticmethod
+    def _is_in_selection_fast(display_row, col, sel):
+        """Check if cell is selected using pre-normalized selection bounds."""
+        sr, sc, er, ec = sel
+        if display_row < sr or display_row > er:
+            return False
+        if display_row == sr and display_row == er:
+            return sc <= col <= ec
+        if display_row == sr:
+            return col >= sc
+        if display_row == er:
+            return col <= ec
+        return True
+
     def has_selection(self):
         return self._selection_start is not None and self._selection_end is not None
 
@@ -594,34 +671,55 @@ class TerminalWidget(QWidget):
         screen = self._screen
         history_lines = self._get_history_lines()
 
-        # Build URL map for this paint cycle (for underline rendering)
+        # Pre-compute values used by every cell (avoid per-cell construction)
+        default_bg = QColor(self._theme.terminal_bg)
+        sel = self._get_normalized_selection()
+        sel_bg = QColor(self._theme.selection_bg) if sel else None
+        sel_fg = QColor(self._theme.selection_fg) if sel else None
+
+        # Build URL map for this paint cycle (cached)
         url_cells = self._find_urls_on_screen(history_lines)
 
         for display_row in range(self._rows):
             line_data, is_history = self._get_line_data(display_row, history_lines)
             if line_data is None:
                 continue
-            self._paint_line(painter, display_row, line_data, is_history, url_cells)
+            # Skip entirely empty rows that have no selection overlap
+            if not is_history and not line_data:
+                if sel is None or display_row < sel[0] or display_row > sel[2]:
+                    continue
+            self._paint_line(painter, display_row, line_data, is_history,
+                             url_cells, default_bg, sel, sel_bg, sel_fg)
 
-        # Draw cursor:
-        # - Only when not scrolled back
-        # - Only when blink state is visible
-        # - Only when terminal hasn't hidden cursor via \e[?25l
+        # Draw cursor (only when at bottom of scrollback and blink-visible)
         cursor_hidden = getattr(screen.cursor, 'hidden', False)
         if self._scrollback_offset == 0 and self._cursor_visible and not cursor_hidden:
             self._paint_cursor(painter, screen.cursor.y, screen.cursor.x)
 
         painter.end()
 
-    def _paint_line(self, painter, display_row, line_data, is_history, url_cells=None):
+    def _paint_line(self, painter, display_row, line_data, is_history,
+                    url_cells, default_bg, sel, sel_bg, sel_fg):
         """Paint one line from either screen buffer or history."""
         y = display_row * self._cell_height
-        screen = self._screen
+
+        # Pre-check: can this row possibly contain selected cells?
+        row_in_sel = (sel is not None and sel[0] <= display_row <= sel[2])
 
         col = 0
         while col < self._cols:
             char = self._get_char_at(line_data, col, is_history)
             char_data = char.data if char.data else " "
+
+            # --- Fast path: skip invisible cells ---
+            # A space with default background, no decorations, not selected
+            if char_data == " ":
+                if (char.bg == "default" and not char.reverse
+                        and not char.underscore and not char.strikethrough
+                        and (not row_in_sel
+                             or not self._is_in_selection_fast(display_row, col, sel))):
+                    col += 1
+                    continue
 
             # Resolve colors
             fg = self._resolve_color(char.fg, is_fg=True)
@@ -640,33 +738,33 @@ class TerminalWidget(QWidget):
             # Ensure minimum contrast so text is never invisible
             fg = self._ensure_contrast(fg, bg)
 
-            # Selection highlighting
-            in_sel = self._is_in_selection(display_row, col)
+            # Selection highlighting (using pre-normalized bounds)
+            in_sel = row_in_sel and self._is_in_selection_fast(display_row, col, sel)
             if in_sel:
-                bg = QColor(self._theme.selection_bg)
-                fg = QColor(self._theme.selection_fg)
+                bg = sel_bg
+                fg = sel_fg
 
             x = col * self._cell_width
 
-            # Wide character handling
+            # Wide character handling — skip wcwidth for ASCII (always width 1)
             char_width = 1
-            wc = wcwidth(char_data) if char_data and char_data != " " else 1
-            if wc > 1:
-                char_width = wc
+            if char_data != " " and ord(char_data) > 127:
+                wc = wcwidth(char_data)
+                if wc > 1:
+                    char_width = wc
 
-            cell_rect = QRect(x, y, self._cell_width * char_width, self._cell_height)
-
-            # Draw cell background
-            if bg != QColor(self._theme.terminal_bg) or in_sel:
-                painter.fillRect(cell_rect, bg)
+            # Draw cell background (only if non-default or selected)
+            if bg != default_bg or in_sel:
+                painter.fillRect(
+                    QRect(x, y, self._cell_width * char_width, self._cell_height), bg)
 
             # Check if this cell is part of a URL
             is_url = url_cells and (display_row, col) in url_cells
 
             # Draw character
-            if char_data.strip():
+            if char_data != " ":
                 # URL text gets a distinct color
-                draw_fg = QColor("#5599DD") if is_url and not in_sel else fg
+                draw_fg = _URL_LINK_COLOR if is_url and not in_sel else fg
                 painter.setPen(draw_fg)
                 if char.bold and char.italics:
                     painter.setFont(self._font_bold_italic)
@@ -683,7 +781,7 @@ class TerminalWidget(QWidget):
                               url_cells and (display_row, col) in url_cells and
                               url_cells[(display_row, col)] == self._hovered_url[4])
             if char.underscore or is_hovered_url:
-                painter.setPen(QColor("#5599DD") if is_hovered_url else fg)
+                painter.setPen(_URL_LINK_COLOR if is_hovered_url else fg)
                 underline_y = y + self._cell_height - 1
                 painter.drawLine(x, underline_y, x + self._cell_width * char_width, underline_y)
 
@@ -722,7 +820,11 @@ class TerminalWidget(QWidget):
         if history_len > 0 and not self._screen.in_alt_screen:
             self._scrollbar.setVisible(True)
             self._scrollbar.setRange(0, history_len)
+            # Block signals to prevent valueChanged -> _on_scrollbar_changed
+            # cascade that sets _dirty_all=True on every data arrival.
+            self._scrollbar.blockSignals(True)
             self._scrollbar.setValue(history_len - self._scrollback_offset)
+            self._scrollbar.blockSignals(False)
             self._scrollbar.setPageStep(self._rows)
         else:
             self._scrollbar.setVisible(False)
@@ -731,6 +833,7 @@ class TerminalWidget(QWidget):
         history_len = len(self._screen.history.top) if hasattr(self._screen.history, 'top') else 0
         self._scrollback_offset = max(0, history_len - value)
         self._url_cache_valid = False
+        self._dirty_all = True
         self.update()
 
     # --- URL detection ---
@@ -1124,6 +1227,8 @@ class TerminalWidget(QWidget):
     def apply_theme(self, theme):
         """Apply a new theme to this terminal."""
         self._theme = theme
+        self._color_cache.clear()
+        self._dirty_all = True
         self.update()
 
     # --- Session data ---
