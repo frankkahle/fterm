@@ -20,6 +20,7 @@ DEFAULT_SETTINGS = {
     "window_state": None,
     "zoom_level": 0,
     "terminal_padding": 4,
+    "last_update_check": 0,
 }
 
 CONFIG_DIR = os.path.expanduser("~/.config/fterm")

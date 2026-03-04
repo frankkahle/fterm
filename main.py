@@ -22,7 +22,7 @@ from PyQt5.QtGui import QIcon
 from settings import Settings
 from mainwindow import MainWindow
 
-VERSION = "1.3.1"
+VERSION = "1.4.0"
 
 
 def parse_args():

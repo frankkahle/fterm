@@ -55,6 +55,7 @@ else
     cp "${SCRIPT_DIR}/ssh_session_store.py" "${APP_DIR}/"
     cp "${SCRIPT_DIR}/ssh_sidebar.py" "${APP_DIR}/"
     cp "${SCRIPT_DIR}/ssh_dialogs.py" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/update_checker.py" "${APP_DIR}/"
     cp "${SCRIPT_DIR}/uninstall.sh" "${APP_DIR}/"
     cp "${SCRIPT_DIR}/requirements.txt" "${APP_DIR}/"
     cp "${SCRIPT_DIR}/resources/fterm.svg" "${APP_DIR}/resources/"

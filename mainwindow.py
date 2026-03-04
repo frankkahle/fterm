@@ -18,6 +18,7 @@ from find_bar import FindBar
 from ssh_session_store import SSHSessionStore, SSHSession
 from ssh_sidebar import SSHSidebarPanel
 from ssh_dialogs import SSHSessionDialog, SSHGroupDialog, SSHImportDialog
+from update_checker import UpdateChecker
 
 
 class MainWindow(QMainWindow):
@@ -46,6 +47,10 @@ class MainWindow(QMainWindow):
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._update_statusbar)
         self._status_timer.start(2000)
+
+        # Update checker (auto-check after short delay to not slow startup)
+        self._update_checker = UpdateChecker(self._version, self._settings)
+        QTimer.singleShot(3000, self._auto_check_updates)
 
     def _setup_central_widget(self):
         # Horizontal splitter: SSH sidebar (left) | terminal area (right)
@@ -187,6 +192,9 @@ class MainWindow(QMainWindow):
 
         # Help menu
         help_menu = menubar.addMenu("&Help")
+        check_updates_action = help_menu.addAction("Check for Updates...")
+        check_updates_action.triggered.connect(self._manual_check_updates)
+        help_menu.addSeparator()
         about_action = help_menu.addAction("About fterm")
         about_action.triggered.connect(self._show_about)
 
@@ -559,6 +567,45 @@ class MainWindow(QMainWindow):
                     self, "Import from Remmina",
                     f"Imported {len(selected)} session(s).",
                 )
+
+    # --- Update checking ---
+
+    def _auto_check_updates(self):
+        """Silently check for updates on startup (respects 24h cooldown)."""
+        self._update_checker.auto_check(
+            on_update=self._on_update_available,
+        )
+
+    def _manual_check_updates(self):
+        """User-triggered update check (always checks, shows result)."""
+        self._statusbar.showMessage("Checking for updates...", 5000)
+        self._update_checker.check(
+            on_update=self._on_update_available,
+            on_finished=self._on_manual_check_finished,
+            record_time=True,
+        )
+
+    def _on_update_available(self, version, download_url, changelog):
+        """Show update notification."""
+        msg = (
+            f"<h3>fterm {version} is available</h3>"
+            f"<p>You are running v{self._version}.</p>"
+        )
+        if changelog:
+            msg += f"<p><b>What's new:</b> {changelog}</p>"
+        if download_url:
+            msg += (
+                f'<p>Download: <a href="{download_url}">{download_url}</a></p>'
+                "<p>After downloading, extract and run <code>sudo ./install.sh</code></p>"
+            )
+        else:
+            msg += "<p>Visit <a href=\"https://github.com/frankkahle/fterm\">GitHub</a> to download.</p>"
+        QMessageBox.information(self, "Update Available", msg)
+
+    def _on_manual_check_finished(self, had_update):
+        """Show 'up to date' message if no update was found (manual check only)."""
+        if not had_update:
+            self._statusbar.showMessage(f"fterm v{self._version} is up to date.", 5000)
 
     # --- Tools ---
 
