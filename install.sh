@@ -14,34 +14,58 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DIST_DIR="${SCRIPT_DIR}/dist/fterm"
 
 echo "Installing fterm to ${APP_DIR}..."
 
-# Install application files
-mkdir -p "${APP_DIR}/resources"
-cp "${SCRIPT_DIR}/main.py" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/mainwindow.py" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/terminal_widget.py" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/terminal_process.py" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/session_tab_manager.py" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/settings.py" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/themes.py" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/preferences_dialog.py" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/session_manager.py" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/find_bar.py" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/ssh_session_store.py" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/ssh_sidebar.py" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/ssh_dialogs.py" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/uninstall.sh" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/requirements.txt" "${APP_DIR}/"
-cp "${SCRIPT_DIR}/resources/fterm.svg" "${APP_DIR}/resources/"
+# Check if compiled build exists
+if [ -d "${DIST_DIR}" ] && [ -x "${DIST_DIR}/fterm" ]; then
+    echo "  Using compiled (PyInstaller) build..."
+    # Remove old install and copy entire compiled dist
+    rm -rf "${APP_DIR}"
+    cp -a "${DIST_DIR}" "${APP_DIR}"
+    cp "${SCRIPT_DIR}/uninstall.sh" "${APP_DIR}/"
+    # Ensure resources are present
+    if [ ! -d "${APP_DIR}/resources" ]; then
+        mkdir -p "${APP_DIR}/resources"
+        cp "${SCRIPT_DIR}/resources/fterm.svg" "${APP_DIR}/resources/"
+    fi
 
-# Create launcher script
-cat > "${BIN_LINK}" << 'LAUNCHER'
+    # Create launcher script pointing to compiled binary
+    cat > "${BIN_LINK}" << 'LAUNCHER'
+#!/bin/bash
+exec /opt/fterm/fterm "$@"
+LAUNCHER
+    chmod +x "${BIN_LINK}"
+else
+    echo "  Using Python source install (no compiled build found)..."
+    echo "  Tip: Run ./build.sh first for a compiled build."
+    # Install application files
+    mkdir -p "${APP_DIR}/resources"
+    cp "${SCRIPT_DIR}/main.py" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/mainwindow.py" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/terminal_widget.py" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/terminal_process.py" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/session_tab_manager.py" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/settings.py" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/themes.py" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/preferences_dialog.py" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/session_manager.py" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/find_bar.py" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/ssh_session_store.py" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/ssh_sidebar.py" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/ssh_dialogs.py" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/uninstall.sh" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/requirements.txt" "${APP_DIR}/"
+    cp "${SCRIPT_DIR}/resources/fterm.svg" "${APP_DIR}/resources/"
+
+    # Create launcher script
+    cat > "${BIN_LINK}" << 'LAUNCHER'
 #!/bin/bash
 exec python3 /opt/fterm/main.py "$@"
 LAUNCHER
-chmod +x "${BIN_LINK}"
+    chmod +x "${BIN_LINK}"
+fi
 
 # Install icon at multiple sizes (SVG goes in scalable)
 mkdir -p "${ICON_DIR}/scalable/apps"
