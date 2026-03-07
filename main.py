@@ -17,12 +17,13 @@ if app_dir not in sys.path:
     sys.path.insert(0, app_dir)
 
 from PyQt5.QtWidgets import QApplication, QStyleFactory
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIcon
 from settings import Settings
 from mainwindow import MainWindow
+from splash_screen import SplashScreen
 
-VERSION = "1.4.1"
+VERSION = "1.5.0"
 
 
 def parse_args():
@@ -68,10 +69,20 @@ def main():
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
 
+    # Show splash screen
+    splash = SplashScreen(version=VERSION)
+    splash.show()
+    app.processEvents()
+
+    # Build main window behind the splash
+    splash.set_status("Loading settings...")
+    app.processEvents()
     settings = Settings()
     window = MainWindow(settings, version=VERSION)
 
     # Restore session or start fresh
+    splash.set_status("Restoring session...")
+    app.processEvents()
     restored = False
     if not args.new:
         restored = window.restore_session()
@@ -82,10 +93,16 @@ def main():
         cwd = args.directory or None
         window.new_tab(shell=shell, cwd=cwd)
 
-    window.show()
+    splash.set_status("Ready")
+    app.processEvents()
 
-    # Apply theme after show for proper rendering
-    window.apply_theme()
+    def _show_main():
+        window.show()
+        window.apply_theme()
+        splash.close()
+
+    # Minimum 2.5s display, then show main window
+    QTimer.singleShot(2500, _show_main)
 
     sys.exit(app.exec_())
 

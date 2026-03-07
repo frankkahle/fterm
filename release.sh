@@ -38,7 +38,7 @@ SOURCE_FILES=(
     main.py mainwindow.py terminal_widget.py terminal_process.py
     session_tab_manager.py settings.py themes.py preferences_dialog.py
     session_manager.py find_bar.py ssh_session_store.py ssh_sidebar.py
-    ssh_dialogs.py update_checker.py requirements.txt
+    ssh_dialogs.py update_checker.py splash_screen.py requirements.txt
     install.sh uninstall.sh
 )
 
@@ -48,6 +48,7 @@ done
 
 # Copy resources
 cp "${SCRIPT_DIR}/resources/fterm.svg" "${STAGING}/resources/"
+cp "${SCRIPT_DIR}/resources/sos-logo.png" "${STAGING}/resources/"
 if [ -f "${SCRIPT_DIR}/fterm.desktop" ]; then
     cp "${SCRIPT_DIR}/fterm.desktop" "${STAGING}/"
 fi
