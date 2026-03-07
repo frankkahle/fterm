@@ -2,12 +2,14 @@
 
 A terminal emulator built from scratch with Python, PyQt5, and pyte.
 
-**Version 1.2.0** | **SOS Tech Services**
+**Version 1.4.1** | **SOS Tech Services**
 
 ## Features
 
 - **Full VT100/xterm emulation** via pyte — colored output, cursor movement, alt-screen apps (vim, htop, less, nano)
 - **Multiple tabs** — Ctrl+Shift+T to open, Ctrl+Shift+W to close, Ctrl+Tab to switch
+- **SSH session manager** — sidebar directory of saved SSH sessions, quick-connect dialog, Remmina import
+- **Built-in update checker** — automatic and manual check for new versions
 - **Right-click context menu** — Copy, Paste, Select All, Clear, Reset
 - **Find in scrollback** — Ctrl+Shift+F to search terminal history
 - **Mouse text selection** — click and drag, double-click to select word, triple-click to select line
@@ -72,6 +74,8 @@ fterm -n               # Start fresh (ignore saved session)
 | Ctrl+Shift+W | Close tab |
 | Ctrl+Tab | Next tab |
 | Ctrl+Shift+Tab | Previous tab |
+| Ctrl+C | Copy selection (when text selected) / SIGINT |
+| Ctrl+V | Paste from clipboard |
 | Ctrl+Shift+C | Copy selection |
 | Ctrl+Shift+V | Paste |
 | Ctrl+Shift+F | Find in scrollback |
@@ -80,7 +84,7 @@ fterm -n               # Start fresh (ignore saved session)
 | Ctrl+Shift+0 | Reset zoom |
 | F11 | Toggle fullscreen |
 
-Note: Ctrl+C sends SIGINT to the shell as expected. Copy uses Ctrl+Shift+C.
+Note: Ctrl+C copies when text is selected, otherwise sends SIGINT to the shell. Ctrl+Shift+C/V also work.
 
 ## Configuration
 

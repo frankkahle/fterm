@@ -23,6 +23,15 @@ _URL_RE = re.compile(
     r'www\.[^\s<>\'")\]}>]+'
 )
 
+# Pre-compiled patterns for sanitizing escape sequences pyte 0.8.x can't handle.
+# 1) DCS (\033P), APC (\033_), PM (\033^) — strip entirely (content through ST/BEL).
+_DCS_APC_PM_RE = re.compile(rb'\x1b[P_^].*?(?:\x1b\\|\x07|\x9c)', re.DOTALL)
+# 2) CSI sub-parameter separator ':' — pyte treats it as an unknown command,
+#    causing leftover digits/letters to render as visible garbage.  Convert to ';'.
+_CSI_COLON_RE = re.compile(rb'(\x1b\[[\d;:?]*):([\d;:]*[A-Za-z@-~])')
+# 3) OSC 8 hyperlinks (\033]8;params;url ST text \033]8;;ST) — pyte silently
+#    drops the OSC but the pattern is fine; no extra filter needed.
+
 
 # Map pyte color names to ANSI indices
 _ANSI_COLOR_NAMES = {
@@ -338,9 +347,21 @@ class TerminalWidget(QWidget):
 
     # --- Data handling ---
 
+    @staticmethod
+    def _sanitize_for_pyte(data):
+        """Strip/normalise escape sequences that pyte 0.8.x can't handle."""
+        # Strip DCS / APC / PM sequences (their content would be drawn as text)
+        data = _DCS_APC_PM_RE.sub(b'', data)
+        # Convert ':' sub-parameter separator to ';' inside CSI sequences
+        while b':' in data:
+            data, n = _CSI_COLON_RE.subn(lambda m: m.group(1) + b';' + m.group(2), data)
+            if n == 0:
+                break
+        return data
+
     def _on_data_ready(self, data):
         """Feed raw bytes from PTY into pyte, coalesce repaints."""
-        self._stream.feed(data)
+        self._stream.feed(self._sanitize_for_pyte(data))
         self._url_cache_valid = False
         self._update_scrollbar()
         # Auto-scroll to bottom on new output
@@ -817,6 +838,7 @@ class TerminalWidget(QWidget):
 
     def _update_scrollbar(self):
         history_len = len(self._screen.history.top) if hasattr(self._screen.history, 'top') else 0
+        was_visible = self._scrollbar.isVisible()
         if history_len > 0 and not self._screen.in_alt_screen:
             self._scrollbar.setVisible(True)
             self._scrollbar.setRange(0, history_len)
@@ -828,6 +850,11 @@ class TerminalWidget(QWidget):
             self._scrollbar.setPageStep(self._rows)
         else:
             self._scrollbar.setVisible(False)
+        # When scrollbar visibility changes, the available terminal width
+        # changes — recalculate grid and resize PTY so the remote app
+        # (especially over SSH) knows the correct column count.
+        if self._scrollbar.isVisible() != was_visible:
+            self._recalculate_grid()
 
     def _on_scrollbar_changed(self, value):
         history_len = len(self._screen.history.top) if hasattr(self._screen.history, 'top') else 0
@@ -1122,8 +1149,9 @@ class TerminalWidget(QWidget):
             self._scrollback_offset = 0
             self._update_scrollbar()
 
-        # Clear selection on typing (except for copy shortcut)
-        if not (mods & Qt.ShiftModifier and mods & Qt.ControlModifier and key == Qt.Key_C):
+        # Clear selection on typing (except for copy shortcuts)
+        is_copy = (mods & Qt.ControlModifier and key == Qt.Key_C)
+        if not is_copy:
             if self.has_selection() and key not in (Qt.Key_Shift, Qt.Key_Control, Qt.Key_Alt, Qt.Key_Meta):
                 self.clear_selection()
 
@@ -1144,6 +1172,16 @@ class TerminalWidget(QWidget):
         if seq is not None:
             self._process.write(seq)
             return
+
+        # Ctrl+C: copy if there's a selection, otherwise send SIGINT (^C)
+        # Ctrl+V: always paste from clipboard
+        if mods & Qt.ControlModifier and not mods & Qt.ShiftModifier:
+            if key == Qt.Key_C and self.has_selection():
+                self.copy_selection()
+                return
+            if key == Qt.Key_V:
+                self.paste_clipboard()
+                return
 
         # Ctrl+letter (send as control character)
         if mods & Qt.ControlModifier and not mods & Qt.ShiftModifier:
