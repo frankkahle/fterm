@@ -2,7 +2,7 @@
 
 A terminal emulator built from scratch with Python, PyQt5, and pyte.
 
-**Version 1.4.1** | **SOS Tech Services**
+**Version 1.5.1** | **SOS Tech Services**
 
 ## Features
 

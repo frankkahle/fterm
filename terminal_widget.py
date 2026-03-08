@@ -220,6 +220,12 @@ class TerminalWidget(QWidget):
         self._url_cache = None
         self._url_cache_valid = False
 
+        # Deferred URL detection: only scan after output settles (250ms idle)
+        self._url_scan_timer = QTimer(self)
+        self._url_scan_timer.setSingleShot(True)
+        self._url_scan_timer.setInterval(250)
+        self._url_scan_timer.timeout.connect(self._deferred_url_scan)
+
         # Widget setup
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAttribute(Qt.WA_InputMethodEnabled, True)
@@ -363,12 +369,16 @@ class TerminalWidget(QWidget):
         """Feed raw bytes from PTY into pyte, coalesce repaints."""
         self._stream.feed(self._sanitize_for_pyte(data))
         self._url_cache_valid = False
-        self._update_scrollbar()
+        # Restart the URL scan idle timer (will fire 250ms after last data)
+        self._url_scan_timer.start()
         # Auto-scroll to bottom on new output
         if self._scrollback_offset > 0 and not self._screen.in_alt_screen:
             self._scrollback_offset = 0
             self._dirty_all = True
-        # Coalesce: schedule a repaint if one isn't already pending
+        # Coalesce: schedule a repaint if one isn't already pending.
+        # During high-throughput output multiple data_ready signals fire
+        # between repaints — defer scrollbar update to the repaint flush
+        # so we only compute it once per visible frame.
         if not self._repaint_pending:
             self._repaint_pending = True
             self._repaint_timer.start()
@@ -376,11 +386,16 @@ class TerminalWidget(QWidget):
     def _flush_repaint(self):
         """Execute the coalesced repaint."""
         self._repaint_pending = False
+        # Update scrollbar once per visible frame (not per data arrival)
+        self._update_scrollbar()
         dirty = self._screen.dirty
-        if self._dirty_all:
+        if self._dirty_all or len(dirty) > self._rows // 2:
+            # If more than half the rows are dirty, just repaint everything
+            self._dirty_all = False
+            self._screen.dirty.clear()
             self.update()
-        else:
-            # Only repaint dirty line regions
+            return
+        if dirty:
             for row in dirty:
                 y = self._padding + row * self._cell_height
                 self.update(QRect(0, y, self.width(), self._cell_height))
@@ -839,8 +854,10 @@ class TerminalWidget(QWidget):
     def _update_scrollbar(self):
         history_len = len(self._screen.history.top) if hasattr(self._screen.history, 'top') else 0
         was_visible = self._scrollbar.isVisible()
-        if history_len > 0 and not self._screen.in_alt_screen:
-            self._scrollbar.setVisible(True)
+        should_show = history_len > 0 and not self._screen.in_alt_screen
+        if should_show:
+            if not was_visible:
+                self._scrollbar.setVisible(True)
             self._scrollbar.setRange(0, history_len)
             # Block signals to prevent valueChanged -> _on_scrollbar_changed
             # cascade that sets _dirty_all=True on every data arrival.
@@ -848,12 +865,12 @@ class TerminalWidget(QWidget):
             self._scrollbar.setValue(history_len - self._scrollback_offset)
             self._scrollbar.blockSignals(False)
             self._scrollbar.setPageStep(self._rows)
-        else:
+        elif was_visible:
             self._scrollbar.setVisible(False)
         # When scrollbar visibility changes, the available terminal width
         # changes — recalculate grid and resize PTY so the remote app
         # (especially over SSH) knows the correct column count.
-        if self._scrollbar.isVisible() != was_visible:
+        if should_show != was_visible:
             self._recalculate_grid()
 
     def _on_scrollbar_changed(self, value):
@@ -877,9 +894,19 @@ class TerminalWidget(QWidget):
         return "".join(chars)
 
     def _find_urls_on_screen(self, history_lines=None):
-        """Find all URLs on the visible screen. Returns {(row,col): url_text}."""
+        """Find all URLs on the visible screen. Returns {(row,col): url_text}.
+
+        During rapid output the cache is stale but we return whatever we
+        have (possibly empty) to avoid expensive per-frame scans.  The
+        deferred URL scan timer will rebuild the cache once output settles.
+        """
         if self._url_cache_valid and self._url_cache is not None:
             return self._url_cache
+        # Return stale cache (or empty) — the deferred scan will refresh it
+        return self._url_cache or {}
+
+    def _rebuild_url_cache(self, history_lines=None):
+        """Full URL scan across all visible rows."""
         url_cells = {}
         for display_row in range(self._rows):
             line_text = self._get_line_text(display_row, history_lines)
@@ -890,6 +917,11 @@ class TerminalWidget(QWidget):
         self._url_cache = url_cells
         self._url_cache_valid = True
         return url_cells
+
+    def _deferred_url_scan(self):
+        """Called ~250ms after the last data arrival — rebuild URL cache."""
+        self._rebuild_url_cache()
+        self.update()
 
     def _url_at_pos(self, display_row, col):
         """Return the URL string at the given cell, or None."""
