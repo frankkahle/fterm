@@ -23,7 +23,7 @@ from settings import Settings
 from mainwindow import MainWindow
 from splash_screen import SplashScreen
 
-VERSION = "1.5.1"
+VERSION = "1.5.2"
 
 
 def parse_args():

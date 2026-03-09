@@ -24,8 +24,10 @@ _URL_RE = re.compile(
 )
 
 # Pre-compiled patterns for sanitizing escape sequences pyte 0.8.x can't handle.
-# 1) DCS (\033P), APC (\033_), PM (\033^) — strip entirely (content through ST/BEL).
-_DCS_APC_PM_RE = re.compile(rb'\x1b[P_^].*?(?:\x1b\\|\x07|\x9c)', re.DOTALL)
+# 1) DCS (\033P), APC (\033_), PM (\033^) — strip entirely (content through ST).
+#    Only ST (\033\\ or \x9c) terminates these — NOT BEL (\x07), which is only
+#    valid for OSC.  Using BEL as terminator caused false matches that ate real data.
+_DCS_APC_PM_RE = re.compile(rb'\x1b[P_^].*?(?:\x1b\\|\x9c)', re.DOTALL)
 # 2) CSI sub-parameter separator ':' — pyte treats it as an unknown command,
 #    causing leftover digits/letters to render as visible garbage.  Convert to ';'.
 _CSI_COLON_RE = re.compile(rb'(\x1b\[[\d;:?]*):([\d;:]*[A-Za-z@-~])')
@@ -226,6 +228,9 @@ class TerminalWidget(QWidget):
         self._url_scan_timer.setInterval(250)
         self._url_scan_timer.timeout.connect(self._deferred_url_scan)
 
+        # Byte buffer for incomplete escape sequences split across PTY reads
+        self._pending_bytes = b""
+
         # Widget setup
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAttribute(Qt.WA_InputMethodEnabled, True)
@@ -365,9 +370,65 @@ class TerminalWidget(QWidget):
                 break
         return data
 
+    @staticmethod
+    def _split_trailing_escape(data):
+        """Split off any trailing incomplete escape sequence for buffering.
+
+        Returns (feed_data, pending_bytes).  Escape sequences that span PTY
+        read boundaries would otherwise be fed to pyte in two halves —
+        causing it to mis-parse the first half and lose characters.
+        """
+        if not data:
+            return data, b""
+
+        # Search only the tail (sequences are never longer than ~256 bytes)
+        search_start = max(0, len(data) - 256)
+        last_esc = data.rfind(b'\x1b', search_start)
+        if last_esc < 0:
+            return data, b""
+
+        trailing = data[last_esc:]
+
+        # Bare ESC — always incomplete
+        if len(trailing) == 1:
+            return data[:last_esc], trailing
+
+        second = trailing[1:2]
+
+        # CSI  (\x1b[) — terminated by byte in 0x40-0x7E
+        if second == b'[':
+            for i in range(2, len(trailing)):
+                if 0x40 <= trailing[i] <= 0x7E:
+                    return data, b""  # complete
+            return data[:last_esc], trailing  # incomplete CSI
+
+        # OSC  (\x1b]) — terminated by ST (\x1b\\, \x9c) or BEL (\x07)
+        if second == b']':
+            if b'\x1b\\' in trailing[2:] or b'\x07' in trailing[2:] or b'\x9c' in trailing[2:]:
+                return data, b""
+            return data[:last_esc], trailing
+
+        # DCS / APC / PM — terminated by ST only
+        if second in (b'P', b'_', b'^'):
+            if b'\x1b\\' in trailing[2:] or b'\x9c' in trailing[2:]:
+                return data, b""
+            return data[:last_esc], trailing
+
+        # Two-byte escape sequences (ESC + letter) are always complete
+        return data, b""
+
     def _on_data_ready(self, data):
         """Feed raw bytes from PTY into pyte, coalesce repaints."""
-        self._stream.feed(self._sanitize_for_pyte(data))
+        # Rejoin any bytes held back from the previous read
+        if self._pending_bytes:
+            data = self._pending_bytes + data
+            self._pending_bytes = b""
+
+        # Hold back trailing incomplete escape sequences for the next read
+        data, self._pending_bytes = self._split_trailing_escape(data)
+
+        if data:
+            self._stream.feed(self._sanitize_for_pyte(data))
         self._url_cache_valid = False
         # Restart the URL scan idle timer (will fire 250ms after last data)
         self._url_scan_timer.start()
