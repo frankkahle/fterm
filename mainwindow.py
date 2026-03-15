@@ -1,4 +1,4 @@
-"""Main window for fterm: menus, toolbar, statusbar, SSH sidebar."""
+"""Main window for SOSterm: menus, toolbar, statusbar, SSH sidebar."""
 
 import os
 import sys
@@ -31,7 +31,7 @@ class MainWindow(QMainWindow):
         self._session_manager = SessionManager()
         self._ssh_store = SSHSessionStore()
 
-        self.setWindowTitle("fterm")
+        self.setWindowTitle("SOSterm")
         self.resize(900, 600)
 
         self._setup_central_widget()
@@ -195,7 +195,7 @@ class MainWindow(QMainWindow):
         check_updates_action = help_menu.addAction("Check for Updates...")
         check_updates_action.triggered.connect(self._manual_check_updates)
         help_menu.addSeparator()
-        about_action = help_menu.addAction("About fterm")
+        about_action = help_menu.addAction("About SOSterm")
         about_action.triggered.connect(self._show_about)
 
     # --- Toolbar ---
@@ -272,16 +272,16 @@ class MainWindow(QMainWindow):
         if terminal:
             title = terminal.get_title()
             if title:
-                self.setWindowTitle(f"{title} - fterm")
+                self.setWindowTitle(f"{title} - SOSterm")
             else:
-                self.setWindowTitle("fterm")
+                self.setWindowTitle("SOSterm")
         else:
-            self.setWindowTitle("fterm")
+            self.setWindowTitle("SOSterm")
 
     def _on_title_changed(self, title):
         """Update window title when the active terminal's OSC title changes."""
         if title:
-            self.setWindowTitle(f"{title} - fterm")
+            self.setWindowTitle(f"{title} - SOSterm")
 
     def _on_tab_count_changed(self, count):
         if count == 0:
@@ -588,7 +588,7 @@ class MainWindow(QMainWindow):
     def _on_update_available(self, version, download_url, changelog):
         """Show update notification."""
         msg = (
-            f"<h3>fterm {version} is available</h3>"
+            f"<h3>SOSterm {version} is available</h3>"
             f"<p>You are running v{self._version}.</p>"
         )
         if changelog:
@@ -599,13 +599,13 @@ class MainWindow(QMainWindow):
                 "<p>After downloading, extract and run <code>sudo ./install.sh</code></p>"
             )
         else:
-            msg += "<p>Visit <a href=\"https://github.com/frankkahle/fterm\">GitHub</a> to download.</p>"
+            msg += "<p>Visit <a href=\"https://github.com/frankkahle/SOSterm\">GitHub</a> to download.</p>"
         QMessageBox.information(self, "Update Available", msg)
 
     def _on_manual_check_finished(self, had_update):
         """Show 'up to date' message if no update was found (manual check only)."""
         if not had_update:
-            self._statusbar.showMessage(f"fterm v{self._version} is up to date.", 5000)
+            self._statusbar.showMessage(f"SOSterm v{self._version} is up to date.", 5000)
 
     # --- Tools ---
 
@@ -616,8 +616,8 @@ class MainWindow(QMainWindow):
     def _show_about(self):
         QMessageBox.about(
             self,
-            "About fterm",
-            f"<h2>fterm v{self._version}</h2>"
+            "About SOSterm",
+            f"<h2>SOSterm v{self._version}</h2>"
             "<p>A terminal emulator built from scratch</p>"
             "<p>Built with Python, PyQt5, and pyte</p>"
             "<p>&copy; SOS Tech Services</p>",
@@ -658,13 +658,13 @@ class MainWindow(QMainWindow):
             try:
                 self.restoreGeometry(QByteArray(base64.b64decode(geo)))
             except Exception as e:
-                print(f"fterm: failed to restore window geometry: {e}", file=sys.stderr)
+                print(f"SOSterm: failed to restore window geometry: {e}", file=sys.stderr)
         if state:
             from PyQt5.QtCore import QByteArray
             try:
                 self.restoreState(QByteArray(base64.b64decode(state)))
             except Exception as e:
-                print(f"fterm: failed to restore window state: {e}", file=sys.stderr)
+                print(f"SOSterm: failed to restore window state: {e}", file=sys.stderr)
         # Ensure the window isn't placed off-screen or behind a desktop panel
         screen = QApplication.primaryScreen()
         if screen:
@@ -711,7 +711,7 @@ class MainWindow(QMainWindow):
             if running > 0:
                 reply = QMessageBox.question(
                     self,
-                    "Close fterm",
+                    "Close SOSterm",
                     f"{running} terminal(s) still running. Close anyway?",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No,

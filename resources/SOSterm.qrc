@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/resources">
+        <file alias="SOSterm.svg">SOSterm.svg</file>
+        <file alias="sos-logo.png">sos-logo.png</file>
+    </qresource>
+</RCC>

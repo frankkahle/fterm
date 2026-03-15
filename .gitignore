@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 *~
@@ -11,3 +12,11 @@ __pycache__/
 build/
 dist/
 *.spec
+
+# C++ build artifacts
+cbuild/
+
+# Source package tarballs
+*.tar.xz
+*.tar.xz.asc
+*.dsc

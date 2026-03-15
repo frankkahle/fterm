@@ -217,6 +217,8 @@ class TerminalWidget(QWidget):
 
         # QColor cache: avoid recreating QColor objects every cell every paint
         self._color_cache = {}
+        # Contrast check cache: avoid luminance math per cell
+        self._contrast_cache = {}
 
         # URL detection cache (invalidated on new data)
         self._url_cache = None
@@ -509,9 +511,11 @@ class TerminalWidget(QWidget):
 
     # --- Grid calculations ---
 
+    _SCROLLBAR_WIDTH = 14
+
     def _recalculate_grid(self):
         """Recalculate rows/cols from widget size and resize PTY."""
-        sb_width = self._scrollbar.width() if self._scrollbar.isVisible() else 0
+        sb_width = self._SCROLLBAR_WIDTH if self._scrollbar.isVisible() else 0
         pad = self._padding * 2
         available_width = self.width() - sb_width - pad
         available_height = self.height() - pad
@@ -526,12 +530,11 @@ class TerminalWidget(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._recalculate_grid()
-        # Position scrollbar (outside padding area)
-        sb_width = 14
+        # Position scrollbar first so _recalculate_grid sees correct geometry
         self._scrollbar.setGeometry(
-            self.width() - sb_width, 0, sb_width, self.height()
+            self.width() - self._SCROLLBAR_WIDTH, 0, self._SCROLLBAR_WIDTH, self.height()
         )
+        self._recalculate_grid()
         self._update_scrollbar()
         self._dirty_all = True
 
@@ -592,9 +595,16 @@ class TerminalWidget(QWidget):
 
     def _ensure_contrast(self, fg, bg):
         """If fg is too close to bg, swap to the theme's opposite default."""
+        key = (fg.rgb(), bg.rgb())
+        cached = self._contrast_cache.get(key)
+        if cached is not None:
+            return cached
         if abs(self._luminance(fg) - self._luminance(bg)) < 40:
-            return QColor(self._theme.terminal_fg)
-        return fg
+            result = QColor(self._theme.terminal_fg)
+        else:
+            result = fg
+        self._contrast_cache[key] = result
+        return result
 
     # --- Display row <-> data source mapping ---
 
@@ -797,71 +807,113 @@ class TerminalWidget(QWidget):
 
     def _paint_line(self, painter, display_row, line_data, is_history,
                     url_cells, default_bg, sel, sel_bg, sel_fg):
-        """Paint one line from either screen buffer or history."""
+        """Paint one line from either screen buffer or history.
+
+        Batches consecutive characters that share the same visual style
+        into single drawText() calls, reducing Qt paint overhead ~5-10x.
+        """
         y = display_row * self._cell_height
+        cell_w = self._cell_width
+        cell_h = self._cell_height
+        ascent = self._font_ascent
 
         # Pre-check: can this row possibly contain selected cells?
         row_in_sel = (sel is not None and sel[0] <= display_row <= sel[2])
 
+        # Pre-fetch for inner loop speed
+        get_char = self._get_char_at
+        resolve = self._resolve_color
+        contrast = self._ensure_contrast
+        palette = get_ansi_palette(self._theme)
+        is_sel_fast = self._is_in_selection_fast
+        hovered = self._hovered_url
+
         col = 0
         while col < self._cols:
-            char = self._get_char_at(line_data, col, is_history)
+            char = get_char(line_data, col, is_history)
             char_data = char.data if char.data else " "
 
             # --- Fast path: skip invisible cells ---
-            # A space with default background, no decorations, not selected
             if char_data == " ":
                 if (char.bg == "default" and not char.reverse
                         and not char.underscore and not char.strikethrough
                         and (not row_in_sel
-                             or not self._is_in_selection_fast(display_row, col, sel))):
+                             or not is_sel_fast(display_row, col, sel))):
                     col += 1
                     continue
 
-            # Resolve colors
-            fg = self._resolve_color(char.fg, is_fg=True)
-            bg = self._resolve_color(char.bg, is_fg=False)
-
-            # Handle bold -> bright color mapping for base ANSI colors (0-7)
+            # Resolve style for this cell
+            fg = resolve(char.fg, is_fg=True)
+            bg = resolve(char.bg, is_fg=False)
             if char.bold and isinstance(char.fg, str) and char.fg in _ANSI_COLOR_NAMES:
                 idx = _ANSI_COLOR_NAMES[char.fg]
                 if idx < 8:
-                    fg = get_ansi_palette(self._theme)[idx + 8]
-
-            # Reverse video
+                    fg = palette[idx + 8]
             if char.reverse:
                 fg, bg = bg, fg
+            fg = contrast(fg, bg)
 
-            # Ensure minimum contrast so text is never invisible
-            fg = self._ensure_contrast(fg, bg)
-
-            # Selection highlighting (using pre-normalized bounds)
-            in_sel = row_in_sel and self._is_in_selection_fast(display_row, col, sel)
+            in_sel = row_in_sel and is_sel_fast(display_row, col, sel)
             if in_sel:
                 bg = sel_bg
                 fg = sel_fg
 
-            x = col * self._cell_width
+            is_url = url_cells and (display_row, col) in url_cells
+            draw_fg = _URL_LINK_COLOR if is_url and not in_sel else fg
 
-            # Wide character handling — skip wcwidth for ASCII (always width 1)
+            # Determine font variant
+            style_key = (char.bold, char.italics)
+
+            # Build a run of characters with identical style
+            run_start = col
+            run_chars = char_data
+
+            # Wide character check
             char_width = 1
             if char_data != " " and ord(char_data) > 127:
                 wc = wcwidth(char_data)
                 if wc > 1:
                     char_width = wc
 
-            # Draw cell background (only if non-default or selected)
+            # Only batch single-width, non-wide ASCII characters
+            if char_width == 1 and char_data != " ":
+                next_col = col + 1
+                while next_col < self._cols:
+                    nc = get_char(line_data, next_col, is_history)
+                    nc_data = nc.data if nc.data else " "
+                    if nc_data == " ":
+                        break
+                    # Must share same visual properties to batch
+                    if (nc.fg != char.fg or nc.bg != char.bg
+                            or nc.bold != char.bold or nc.italics != char.italics
+                            or nc.reverse != char.reverse
+                            or nc.underscore != char.underscore
+                            or nc.strikethrough != char.strikethrough):
+                        break
+                    # Selection state must match
+                    nc_in_sel = row_in_sel and is_sel_fast(display_row, next_col, sel)
+                    if nc_in_sel != in_sel:
+                        break
+                    # URL state must match
+                    nc_is_url = url_cells and (display_row, next_col) in url_cells
+                    if nc_is_url != is_url:
+                        break
+                    # Wide chars break the run
+                    if ord(nc_data) > 127:
+                        break
+                    run_chars += nc_data
+                    next_col += 1
+
+            run_len = len(run_chars)
+            x = run_start * cell_w
+
+            # Draw background for the entire run
             if bg != default_bg or in_sel:
                 painter.fillRect(
-                    QRect(x, y, self._cell_width * char_width, self._cell_height), bg)
+                    QRect(x, y, cell_w * run_len, cell_h), bg)
 
-            # Check if this cell is part of a URL
-            is_url = url_cells and (display_row, col) in url_cells
-
-            # Draw character
-            if char_data != " ":
-                # URL text gets a distinct color
-                draw_fg = _URL_LINK_COLOR if is_url and not in_sel else fg
+            # Draw text for the entire run in one call
+            if run_chars.strip():
                 painter.setPen(draw_fg)
                 if char.bold and char.italics:
                     painter.setFont(self._font_bold_italic)
@@ -869,26 +921,25 @@ class TerminalWidget(QWidget):
                     painter.setFont(self._font_bold)
                 elif char.italics:
                     painter.setFont(self._font_italic)
-                painter.drawText(x, y + self._font_ascent, char_data)
+                painter.drawText(x, y + ascent, run_chars)
                 if char.bold or char.italics:
                     painter.setFont(self._font)
 
-            # Underline (from terminal attr or URL hover)
-            is_hovered_url = (self._hovered_url and
-                              url_cells and (display_row, col) in url_cells and
-                              url_cells[(display_row, col)] == self._hovered_url[4])
-            if char.underscore or is_hovered_url:
-                painter.setPen(_URL_LINK_COLOR if is_hovered_url else fg)
-                underline_y = y + self._cell_height - 1
-                painter.drawLine(x, underline_y, x + self._cell_width * char_width, underline_y)
+            # Underline for the run
+            is_hovered = (hovered and is_url and url_cells and
+                          url_cells.get((display_row, run_start)) == hovered[4])
+            if char.underscore or is_hovered:
+                painter.setPen(_URL_LINK_COLOR if is_hovered else fg)
+                underline_y = y + cell_h - 1
+                painter.drawLine(x, underline_y, x + cell_w * run_len, underline_y)
 
-            # Strikethrough
+            # Strikethrough for the run
             if char.strikethrough:
                 painter.setPen(fg)
-                strike_y = y + self._cell_height // 2
-                painter.drawLine(x, strike_y, x + self._cell_width * char_width, strike_y)
+                strike_y = y + cell_h // 2
+                painter.drawLine(x, strike_y, x + cell_w * run_len, strike_y)
 
-            col += char_width
+            col = run_start + run_len
 
     def _paint_cursor(self, painter, row, col):
         """Draw the cursor at the given position."""
@@ -1359,6 +1410,7 @@ class TerminalWidget(QWidget):
         """Apply a new theme to this terminal."""
         self._theme = theme
         self._color_cache.clear()
+        self._contrast_cache.clear()
         self._dirty_all = True
         self.update()
 

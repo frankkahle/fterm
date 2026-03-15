@@ -1,4 +1,4 @@
-# fterm
+# SOSterm
 
 A terminal emulator built from scratch with Python, PyQt5, and pyte.
 
@@ -36,34 +36,34 @@ sudo apt install python3-pyqt5 librsvg2-bin
 pip install pyte ptyprocess wcwidth
 
 # Clone and install
-git clone https://github.com/frankkahle/fterm.git
-cd fterm
+git clone https://github.com/frankkahle/SOSterm.git
+cd SOSterm
 sudo ./install.sh
 ```
 
-This installs fterm to `/opt/fterm`, creates the `fterm` command, and adds it to your applications menu with an icon.
+This installs SOSterm to `/opt/SOSterm`, creates the `SOSterm` command, and adds it to your applications menu with an icon.
 
 To uninstall:
 
 ```bash
-sudo /opt/fterm/uninstall.sh
+sudo /opt/SOSterm/uninstall.sh
 ```
 
 ## Run Without Installing
 
 ```bash
-git clone https://github.com/frankkahle/fterm.git
-cd fterm
+git clone https://github.com/frankkahle/SOSterm.git
+cd SOSterm
 python3 main.py
 ```
 
 ## Usage
 
 ```bash
-fterm                  # Start with default shell
-fterm -e /bin/zsh      # Start with a specific shell
-fterm -d ~/projects    # Start in a specific directory
-fterm -n               # Start fresh (ignore saved session)
+SOSterm                  # Start with default shell
+SOSterm -e /bin/zsh      # Start with a specific shell
+SOSterm -d ~/projects    # Start in a specific directory
+SOSterm -n               # Start fresh (ignore saved session)
 ```
 
 ## Keyboard Shortcuts
@@ -88,7 +88,7 @@ Note: Ctrl+C copies when text is selected, otherwise sends SIGINT to the shell. 
 
 ## Configuration
 
-Settings are stored in `~/.config/fterm/settings.json` and can be edited via Tools > Preferences.
+Settings are stored in `~/.config/SOSterm/settings.json` and can be edited via Tools > Preferences.
 
 ## Dependencies
 

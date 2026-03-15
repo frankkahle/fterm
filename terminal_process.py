@@ -1,4 +1,4 @@
-"""PTY + shell process management for fterm."""
+"""PTY + shell process management for SOSterm."""
 
 import os
 import select
@@ -8,10 +8,19 @@ import ptyprocess
 
 
 class PtyReaderThread(QThread):
-    """QThread that reads from PTY and emits data."""
+    """QThread that reads from PTY and emits batched data.
+
+    Uses os.read() directly with a drain loop to coalesce many small
+    kernel PTY reads into fewer, larger emissions.  This is critical for
+    high-throughput output (e.g. Claude Code) where ptyprocess.read()
+    returns ~54 bytes per call, flooding the Qt event loop with thousands
+    of cross-thread signal deliveries.
+    """
 
     data_received = pyqtSignal(bytes)
     finished_with_status = pyqtSignal(int)
+
+    _READ_SIZE = 65536   # max bytes per os.read()
 
     def __init__(self, pty, parent=None):
         super().__init__(parent)
@@ -20,20 +29,42 @@ class PtyReaderThread(QThread):
 
     def run(self):
         fd = self._pty.fd
+        read_size = self._READ_SIZE
         try:
             while self._running and self._pty.isalive():
                 try:
-                    # Wait for data to be available before reading, so we
-                    # never busy-loop when the PTY is idle.
+                    # Block until data is available (100ms timeout so we
+                    # can check _running / isalive periodically).
                     ready, _, _ = select.select([fd], [], [], 0.1)
                     if not ready:
                         continue
-                    data = self._pty.read(65536)
-                    if data:
-                        self.data_received.emit(data)
-                    else:
-                        # Empty read = EOF on BSD/Solaris
+
+                    # First read — guaranteed to return data since select said ready.
+                    try:
+                        buf = os.read(fd, read_size)
+                    except OSError:
                         break
+                    if not buf:
+                        break  # EOF
+
+                    # Drain loop: keep reading while more data is immediately
+                    # available.  This coalesces the many tiny PTY reads into
+                    # one large emission, reducing cross-thread signal overhead
+                    # by ~100-200x during rapid output.
+                    while True:
+                        r, _, _ = select.select([fd], [], [], 0)
+                        if not r:
+                            break
+                        try:
+                            chunk = os.read(fd, read_size)
+                        except OSError:
+                            break
+                        if not chunk:
+                            break
+                        buf += chunk
+
+                    self.data_received.emit(buf)
+
                 except EOFError:
                     break
                 except OSError:

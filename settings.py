@@ -21,9 +21,10 @@ DEFAULT_SETTINGS = {
     "zoom_level": 0,
     "terminal_padding": 4,
     "last_update_check": 0,
+    "default_ssh_identity_file": "",
 }
 
-CONFIG_DIR = os.path.expanduser("~/.config/fterm")
+CONFIG_DIR = os.path.expanduser("~/.config/SOSterm")
 SETTINGS_FILE = os.path.join(CONFIG_DIR, "settings.json")
 
 

@@ -1,12 +1,12 @@
 [Desktop Entry]
-Name=fterm
-Comment=Terminal emulator built with PyQt5
+Name=SOSterm
+Comment=Terminal emulator by SOS Tech Services
 GenericName=Terminal Emulator
-Exec=fterm
-Icon=fterm
+Exec=SOSterm
+Icon=SOSterm
 Terminal=false
 Type=Application
 Categories=System;TerminalEmulator;
 Keywords=terminal;console;shell;command;prompt;
 StartupNotify=true
-StartupWMClass=fterm
+StartupWMClass=SOSterm

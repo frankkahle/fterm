@@ -1,4 +1,4 @@
-"""SSH session and group editor dialogs for fterm."""
+"""SSH session and group editor dialogs for SOSterm."""
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (

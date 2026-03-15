@@ -1,4 +1,4 @@
-"""SSH session data persistence for fterm."""
+"""SSH session data persistence for SOSterm."""
 
 import configparser
 import glob
@@ -50,12 +50,14 @@ class SSHSession:
             label += f":{self.port}"
         return label
 
-    def build_command(self) -> list:
+    def build_command(self, default_identity_file="") -> list:
         cmd = ["ssh"]
         if self.port and self.port != 22:
             cmd += ["-p", str(self.port)]
-        if self.auth_method == "key" and self.identity_file:
-            cmd += ["-i", os.path.expanduser(self.identity_file)]
+        # Use session-specific key, or fall back to the global default
+        identity = self.identity_file if self.identity_file else default_identity_file
+        if identity:
+            cmd += ["-i", os.path.expanduser(identity)]
         target = ""
         if self.username:
             target = f"{self.username}@{self.host}"
@@ -67,7 +69,7 @@ class SSHSession:
         return cmd
 
 
-_CONFIG_DIR = os.path.expanduser("~/.config/fterm")
+_CONFIG_DIR = os.path.expanduser("~/.config/SOSterm")
 _SESSIONS_FILE = os.path.join(_CONFIG_DIR, "ssh_sessions.json")
 
 

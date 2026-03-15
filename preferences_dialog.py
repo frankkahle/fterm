@@ -1,4 +1,4 @@
-"""Preferences dialog for fterm settings."""
+"""Preferences dialog for SOSterm settings."""
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
     QLabel, QComboBox, QSpinBox, QCheckBox, QLineEdit,
     QPushButton, QGroupBox, QFormLayout, QFontComboBox,
-    QDialogButtonBox,
+    QDialogButtonBox, QFileDialog,
 )
 from themes import get_theme_names
 
@@ -161,9 +161,39 @@ class PreferencesDialog(QDialog):
         session_layout.addWidget(self._restore_check)
 
         layout.addWidget(session_group)
+
+        # SSH group
+        ssh_group = QGroupBox("SSH")
+        ssh_layout = QFormLayout(ssh_group)
+
+        id_layout = QHBoxLayout()
+        self._default_ssh_key_edit = QLineEdit()
+        self._default_ssh_key_edit.setPlaceholderText("Default identity file for all SSH sessions")
+        self._default_ssh_key_edit.setText(
+            self._settings.get("default_ssh_identity_file", "")
+        )
+        id_layout.addWidget(self._default_ssh_key_edit)
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self._browse_default_ssh_key)
+        id_layout.addWidget(browse_btn)
+        ssh_layout.addRow("Default Key:", id_layout)
+
+        layout.addWidget(ssh_group)
         layout.addStretch()
 
         self._tabs.addTab(tab, "Session")
+
+    def _browse_default_ssh_key(self):
+        import os
+        start_dir = os.path.expanduser("~/.ssh")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Default SSH Key", start_dir, "All Files (*)"
+        )
+        if path:
+            home = os.path.expanduser("~")
+            if path.startswith(home):
+                path = "~" + path[len(home):]
+            self._default_ssh_key_edit.setText(path)
 
     def _apply(self):
         """Apply settings without closing."""
@@ -178,6 +208,7 @@ class PreferencesDialog(QDialog):
         self._settings.set("terminal_padding", self._padding_spin.value())
         self._settings.set("auto_save_session", self._auto_save_check.isChecked())
         self._settings.set("restore_session", self._restore_check.isChecked())
+        self._settings.set("default_ssh_identity_file", self._default_ssh_key_edit.text().strip())
 
     def _accept(self):
         """Apply and close."""

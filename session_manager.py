@@ -1,4 +1,4 @@
-"""Session save/restore for fterm."""
+"""Session save/restore for SOSterm."""
 
 import json
 import os

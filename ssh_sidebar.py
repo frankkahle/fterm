@@ -1,4 +1,4 @@
-"""SSH session sidebar panel for fterm."""
+"""SSH session sidebar panel for SOSterm."""
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QIcon

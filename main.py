@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fterm - A terminal emulator built from scratch.
+"""SOSterm - A terminal emulator built from scratch.
 
 Built with Python 3, PyQt5, and pyte (VT100 parser).
 """
@@ -23,12 +23,12 @@ from settings import Settings
 from mainwindow import MainWindow
 from splash_screen import SplashScreen
 
-VERSION = "1.5.2"
+VERSION = "1.6.0"
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="fterm - A terminal emulator built from scratch"
+        description="SOSterm - A terminal emulator built from scratch"
     )
     parser.add_argument(
         "-e", "--execute",
@@ -54,7 +54,7 @@ def main():
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("fterm")
+    app.setApplicationName("SOSterm")
     app.setOrganizationName("SOS Tech Services")
     app.setApplicationVersion(VERSION)
 
@@ -62,10 +62,10 @@ def main():
     app.setStyle(QStyleFactory.create("Fusion"))
 
     # Set application icon
-    icon_path = os.path.join(app_dir, "resources", "fterm.svg")
+    icon_path = os.path.join(app_dir, "resources", "SOSterm.svg")
     if not os.path.exists(icon_path):
         # Installed location
-        icon_path = "/opt/fterm/resources/fterm.svg"
+        icon_path = "/opt/SOSterm/resources/SOSterm.svg"
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
 

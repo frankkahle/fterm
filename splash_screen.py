@@ -1,4 +1,4 @@
-"""SOS Tech branded splash screen for fterm."""
+"""SOS Tech branded splash screen for SOSterm."""
 
 import os
 from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtProperty
@@ -64,7 +64,7 @@ class SplashScreen(QWidget):
         self._logo = QPixmap()
         logo_path = os.path.join(os.path.dirname(__file__), "resources", "sos-logo.png")
         if not os.path.exists(logo_path):
-            logo_path = "/opt/fterm/resources/sos-logo.png"
+            logo_path = "/opt/SOSterm/resources/sos-logo.png"
         if os.path.exists(logo_path):
             self._logo = QPixmap(logo_path)
             if not self._logo.isNull():
@@ -214,15 +214,15 @@ class SplashScreen(QWidget):
             p.setOpacity(self._fade_name)
             p.setFont(self._font_name)
             fm = p.fontMetrics()
-            f_width = fm.horizontalAdvance("f")
+            sos_width = fm.horizontalAdvance("SOS")
             term_width = fm.horizontalAdvance("term")
-            total = f_width + term_width
+            total = sos_width + term_width
             nx = cx - total // 2
             offset = int(8 * (1 - self._fade_name))
             p.setPen(_TEXT_DARK)
-            p.drawText(nx, y + fm.ascent() + offset, "f")
+            p.drawText(nx, y + fm.ascent() + offset, "SOS")
             p.setPen(_BRAND_BLUE)
-            p.drawText(nx + f_width, y + fm.ascent() + offset, "term")
+            p.drawText(nx + sos_width, y + fm.ascent() + offset, "term")
             p.setOpacity(1.0)
         y += 36
 

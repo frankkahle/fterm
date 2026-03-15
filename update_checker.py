@@ -1,6 +1,6 @@
-"""Background update checker for fterm.
+"""Background update checker for SOSterm.
 
-Checks https://sos-tech.ca/updates/fterm/latest.json for new versions.
+Checks https://sos-tech.ca/updates/SOSterm/latest.json for new versions.
 Runs in a QThread to avoid blocking the UI. Respects a 24-hour cooldown
 between automatic checks.
 """
@@ -11,7 +11,7 @@ import urllib.request
 import urllib.error
 from PyQt5.QtCore import QThread, pyqtSignal
 
-UPDATE_URL = "https://sos-tech.ca/updates/fterm/latest.json"
+UPDATE_URL = "https://sos-tech.ca/updates/SOSterm/latest.json"
 CHECK_COOLDOWN = 86400  # 24 hours in seconds
 
 
@@ -39,7 +39,7 @@ class UpdateCheckThread(QThread):
         try:
             req = urllib.request.Request(
                 UPDATE_URL,
-                headers={"User-Agent": f"fterm/{self._current_version}"},
+                headers={"User-Agent": f"SOSterm/{self._current_version}"},
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode("utf-8"))

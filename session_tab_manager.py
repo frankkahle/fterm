@@ -1,4 +1,4 @@
-"""Tab widget managing multiple terminal sessions for fterm."""
+"""Tab widget managing multiple terminal sessions for SOSterm."""
 
 import os
 from PyQt5.QtCore import pyqtSignal, Qt
@@ -83,7 +83,10 @@ class SessionTabManager(QTabWidget):
         self.setCurrentIndex(index)
 
         terminal.set_ssh_session_id(ssh_session.id)
-        terminal.start_process(command=ssh_session.build_command())
+        default_key = ""
+        if self._settings:
+            default_key = self._settings.get("default_ssh_identity_file", "")
+        terminal.start_process(command=ssh_session.build_command(default_identity_file=default_key))
         terminal.setFocus()
 
         self.tab_count_changed.emit(self.count())

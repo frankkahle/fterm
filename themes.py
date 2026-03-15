@@ -1,4 +1,4 @@
-"""Theme system with ANSI color palettes for fterm."""
+"""Theme system with ANSI color palettes for SOSterm."""
 
 from dataclasses import dataclass, field
 from typing import Dict, List
