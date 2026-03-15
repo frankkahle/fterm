@@ -1,29 +1,16 @@
 # SOSterm
 
-Terminal emulator built from scratch by SOS Tech Services. Two implementations exist side-by-side: the original Python/PyQt5 version (v1.6.0) and a C++/Qt5 rewrite (v2.1.0) that uses QTermWidget for terminal emulation.
+Terminal emulator built from scratch by SOS Tech Services.
+
+**Production version is C++/Qt5 (v2.x)** using QTermWidget for terminal emulation. This is what gets built, released, and deployed to clients via the update server.
+
+The Python/PyQt5 code (v1.x) is the original prototype kept for reference/development only — it is NOT shipped or deployed.
 
 Note: The project directory is still named `fterm` (the pre-rebrand name). All code, branding, and references now use **SOSterm**.
 
 ## Build & Run Commands
 
-### Python version (development)
-
-```bash
-# Install dependencies
-pip install -r requirements.txt   # PyQt5, pyte, ptyprocess, wcwidth
-
-# Run directly
-python3 main.py
-python3 main.py -e /bin/zsh          # specify shell
-python3 main.py -d ~/projects        # starting directory
-python3 main.py -n                   # ignore saved session, start fresh
-
-# Build standalone binary with PyInstaller
-./build.sh              # onedir build (fast startup) -> dist/SOSterm/
-./build.sh onefile       # single-file executable     -> dist/SOSterm
-```
-
-### C++ version (v2.1.0)
+### C++ version (production — v2.x)
 
 ```bash
 # Prerequisites: Qt5 (Widgets, Network, Svg), qtermwidget5, CMake >= 3.16
