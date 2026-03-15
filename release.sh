@@ -189,7 +189,7 @@ SHA256=$(sha256sum "${TARBALL}" | cut -d' ' -f1)
 cat > "${DIST_DIR}/latest.json" << EOF
 {
   "version": "${VERSION}",
-  "download_url": "https://sos-tech.ca/updates/SOSterm/${RELEASE_NAME}.tar.gz",
+  "download_url": "https://sos-tech.ca/updates/fterm/${RELEASE_NAME}.tar.gz",
   "changelog": "",
   "sha256": "${SHA256}",
   "size": ${SIZE},
@@ -204,5 +204,5 @@ echo "  Size:        $(du -h "${TARBALL}" | cut -f1)"
 echo "  SHA256:      ${SHA256}"
 echo ""
 echo "Deploy to update server:"
-echo "  cp ${TARBALL} /mnt/sos-updates/SOSterm/"
-echo "  cp ${DIST_DIR}/latest.json /mnt/sos-updates/SOSterm/"
+echo "  cp ${TARBALL} /mnt/sos-updates/fterm/"
+echo "  cp ${DIST_DIR}/latest.json /mnt/sos-updates/fterm/"

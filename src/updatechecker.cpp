@@ -8,7 +8,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 
-static const char *UPDATE_URL = "https://sos-tech.ca/updates/SOSterm/latest.json";
+static const char *UPDATE_URL = "https://sos-tech.ca/updates/fterm/latest.json";
 static const int COOLDOWN_SECS = 86400; // 24 hours
 
 UpdateChecker::UpdateChecker(Settings *settings, const QString &currentVersion,

@@ -59,4 +59,4 @@ cat > "$DIST_DIR/latest.json" <<JSONEOF
 JSONEOF
 
 echo "Edit dist/latest.json with changelog and download URL."
-echo "Then deploy to /mnt/sos-updates/SOSterm/"
+echo "Then deploy to /mnt/sos-updates/fterm/"
