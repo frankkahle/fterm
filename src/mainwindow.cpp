@@ -512,13 +512,124 @@ void MainWindow::onQuickConnect(const QString &input)
 }
 
 void MainWindow::onUpdateAvailable(const QString &version, const QString &url,
-                                    const QString &changelog)
+                                    const QString &changelog, const QString &sha256,
+                                    qint64 size)
 {
-    auto result = QMessageBox::information(this, "Update Available",
-        QStringLiteral("SOSterm %1 is available.\n\n%2").arg(version, changelog),
-        QMessageBox::Ok | QMessageBox::Open);
-    if (result == QMessageBox::Open && !url.isEmpty())
-        QDesktopServices::openUrl(QUrl(url));
+    QString text = QStringLiteral("SOSterm %1 is available.").arg(version);
+    if (!changelog.isEmpty())
+        text += QStringLiteral("\n\n%1").arg(changelog);
+    text += QStringLiteral("\n\nWould you like to update now?");
+
+    QMessageBox msgBox(this);
+    msgBox.setWindowTitle("Update Available");
+    msgBox.setText(text);
+    msgBox.setIcon(QMessageBox::Information);
+    auto *updateBtn = msgBox.addButton("Update Now", QMessageBox::AcceptRole);
+    msgBox.addButton("Later", QMessageBox::RejectRole);
+    msgBox.exec();
+
+    if (msgBox.clickedButton() != updateBtn)
+        return;
+
+    // Create progress dialog
+    m_progressDialog = new QProgressDialog("Downloading update...", "Cancel", 0, 100, this);
+    m_progressDialog->setWindowTitle("Updating SOSterm");
+    m_progressDialog->setWindowModality(Qt::WindowModal);
+    m_progressDialog->setMinimumDuration(0);
+    m_progressDialog->setValue(0);
+    m_progressDialog->setAutoClose(false);
+    m_progressDialog->setAutoReset(false);
+
+    // Connect progress signals
+    connect(m_updateChecker, &UpdateChecker::downloadProgress,
+            this, [this](qint64 received, qint64 total) {
+        if (m_progressDialog) {
+            if (total > 0) {
+                m_progressDialog->setMaximum(100);
+                int pct = static_cast<int>((received * 100) / total);
+                m_progressDialog->setValue(pct);
+                m_progressDialog->setLabelText(
+                    QStringLiteral("Downloading update... %1 MB / %2 MB")
+                        .arg(received / (1024.0 * 1024.0), 0, 'f', 1)
+                        .arg(total / (1024.0 * 1024.0), 0, 'f', 1));
+            } else {
+                m_progressDialog->setMaximum(0); // indeterminate
+                m_progressDialog->setLabelText(
+                    QStringLiteral("Downloading update... %1 MB")
+                        .arg(received / (1024.0 * 1024.0), 0, 'f', 1));
+            }
+        }
+    });
+
+    connect(m_updateChecker, &UpdateChecker::installReady,
+            this, &MainWindow::onInstallReady);
+    connect(m_updateChecker, &UpdateChecker::downloadFailed,
+            this, &MainWindow::onDownloadFailed);
+
+    // Handle cancel
+    connect(m_progressDialog, &QProgressDialog::canceled, this, [this]() {
+        m_updateChecker->cancelDownload();
+        disconnect(m_updateChecker, &UpdateChecker::downloadProgress, this, nullptr);
+        disconnect(m_updateChecker, &UpdateChecker::installReady,
+                   this, &MainWindow::onInstallReady);
+        disconnect(m_updateChecker, &UpdateChecker::downloadFailed,
+                   this, &MainWindow::onDownloadFailed);
+        if (m_progressDialog) {
+            m_progressDialog->deleteLater();
+            m_progressDialog = nullptr;
+        }
+    });
+
+    // Start the download
+    m_updateChecker->downloadAndInstall(url, sha256, size);
+}
+
+void MainWindow::onInstallReady(const QString &installerPath)
+{
+    if (m_progressDialog) {
+        m_progressDialog->deleteLater();
+        m_progressDialog = nullptr;
+    }
+
+    // Disconnect one-shot signals to avoid double-firing on next update check
+    disconnect(m_updateChecker, &UpdateChecker::downloadProgress, this, nullptr);
+    disconnect(m_updateChecker, &UpdateChecker::installReady,
+               this, &MainWindow::onInstallReady);
+    disconnect(m_updateChecker, &UpdateChecker::downloadFailed,
+               this, &MainWindow::onDownloadFailed);
+
+    // Run install.sh with pkexec for graphical sudo
+    bool started = QProcess::startDetached(
+        QStringLiteral("pkexec"),
+        {installerPath});
+
+    if (!started) {
+        QMessageBox::critical(this, "Update Failed",
+            "Failed to launch the installer.\n\n"
+            "You can install manually by running:\n"
+            "  sudo " + installerPath);
+        return;
+    }
+
+    QMessageBox::information(this, "Update Complete",
+        "SOSterm has been updated. Please restart the application.");
+}
+
+void MainWindow::onDownloadFailed(const QString &error)
+{
+    if (m_progressDialog) {
+        m_progressDialog->deleteLater();
+        m_progressDialog = nullptr;
+    }
+
+    // Disconnect one-shot signals
+    disconnect(m_updateChecker, &UpdateChecker::downloadProgress, this, nullptr);
+    disconnect(m_updateChecker, &UpdateChecker::installReady,
+               this, &MainWindow::onInstallReady);
+    disconnect(m_updateChecker, &UpdateChecker::downloadFailed,
+               this, &MainWindow::onDownloadFailed);
+
+    QMessageBox::critical(this, "Update Failed", error);
 }
 
 void MainWindow::updateStatusBar()

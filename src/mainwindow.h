@@ -3,6 +3,7 @@
 
 #include <QMainWindow>
 #include <QLabel>
+#include <QProgressDialog>
 #include <QSplitter>
 #include <QTimer>
 
@@ -57,7 +58,11 @@ private slots:
     void onSettingsChanged(const QString &key, const QVariant &value);
     void onSSHConnect(const SSHSession &session);
     void onQuickConnect(const QString &input);
-    void onUpdateAvailable(const QString &version, const QString &url, const QString &changelog);
+    void onUpdateAvailable(const QString &version, const QString &url,
+                            const QString &changelog, const QString &sha256,
+                            qint64 size);
+    void onInstallReady(const QString &installerPath);
+    void onDownloadFailed(const QString &error);
     void updateStatusBar();
 
 private:
@@ -99,6 +104,9 @@ private:
 
     // Actions
     QAction *m_sshPanelAction;
+
+    // Update progress dialog
+    QProgressDialog *m_progressDialog = nullptr;
 
     // Track selection for Ctrl+C awareness
     bool m_hasSelection = false;
